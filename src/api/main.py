@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.db.session import init_db, close_db
 from src.logging_config import setup_logging
-from src.api.routes import scan, health
+from src.api.routes import scan, health, ai
 
 
 # --- Setup logging before anything else ---
@@ -30,8 +30,11 @@ async def lifespan(app: FastAPI):
         host=settings.api_host,
         port=settings.api_port,
     )
-    await init_db()
-    logger.info("database_initialized")
+    try:
+        await init_db()
+        logger.info("database_initialized")
+    except Exception as e:
+        logger.warning("database_initialization_failed_running_without_db", error=str(e))
 
     yield
 
@@ -66,6 +69,7 @@ app.add_middleware(
 # --- Routes ---
 app.include_router(health.router)
 app.include_router(scan.router)
+app.include_router(ai.router)
 
 
 @app.get("/", include_in_schema=False)

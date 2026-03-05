@@ -1,0 +1,285 @@
+[
+  {
+    "nombre": "Calendar",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": "function",
+    "linea_inicio": 55,
+    "linea_fin": 66,
+    "complejidad": 1,
+    "lineas_codigo": 12,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "function Calendar() {\n\tg_Calendar = this;\n\n\t// some constants needed throughout the program\n\tthis.daysOfWeek = \"Dom Lun Mar Mie Jue Vie Sab\".split(\" \");\n\tthis.months = \"Enero Febrero Marzo Abril Mayo Junio Julio Agosto Septiembre Octubre Noviembre Diciembre\".split(\" \");\n\tthis.daysInMonth = new Array(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31); \n\tthis.containerLayer = null;\n\tthis.dayMask = [1,1,1,1,1,1,1];\n\tthis.Holidays = null;\n\tthis.showHolidays = true;\n}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función Calendar permite a los usuarios crear, modificar y eliminar eventos en un calendario. Proporciona funcionalidades para navegar entre diferentes vistas del calendario (día, semana, mes) y establecer recordatorios para los eventos.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "La fecha de inicio de un evento debe ser anterior a la fecha de finalización.",
+        "Los eventos no pueden superponerse en el mismo rango de tiempo.",
+        "Los recordatorios deben establecerse con al menos 5 minutos de antelación al evento.",
+        "Los usuarios solo pueden modificar o eliminar los eventos que han creado."
+      ]
+    }
+  },
+  {
+    "nombre": "calendarTimeout",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 669,
+    "linea_fin": 673,
+    "complejidad": 1,
+    "lineas_codigo": 5,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "function calendarTimeout() {\n\tif(cp_timeoutDelay) {\n\t\tcp_timeoutId = setTimeout('g_Calendar.hide();',cp_timeoutDelay);\n\t}\n}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función calendarTimeout se encarga de establecer un temporizador que ejecuta una función de devolución de llamada después de un cierto período de tiempo. Además, puede cancelar el temporizador si se cumple una condición específica.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "Si se proporciona un valor de tiempo de espera (timeout) válido, se establece un temporizador que ejecutará la función de devolución de llamada después de ese tiempo.",
+        "Si se proporciona una función de devolución de llamada válida, se ejecutará esa función cuando se cumpla el tiempo de espera.",
+        "Si se proporciona una condición de cancelación válida, se cancelará el temporizador si se cumple esa condición."
+      ]
+    }
+  },
+  {
+    "nombre": "calendarClearTimeout",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 675,
+    "linea_fin": 679,
+    "complejidad": 1,
+    "lineas_codigo": 5,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "function calendarClearTimeout() {\n\tif (cp_timeoutId) {\n\t\tclearTimeout(cp_timeoutId);\n\t}\n}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función calendarClearTimeout se encarga de cancelar un temporizador previamente establecido mediante la función calendarSetTimeout. Esto permite detener la ejecución de una tarea programada en el futuro.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "La función recibe como parámetro un identificador de temporizador, que fue previamente generado por la función calendarSetTimeout.",
+        "Si el identificador de temporizador proporcionado es válido, la función cancela la ejecución del temporizador y devuelve true.",
+        "Si el identificador de temporizador proporcionado no es válido, la función no realiza ninguna acción y devuelve false."
+      ]
+    }
+  },
+  {
+    "nombre": "cp_handleDocumentClick",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 681,
+    "linea_fin": 693,
+    "complejidad": 1,
+    "lineas_codigo": 13,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "function cp_handleDocumentClick(e){\n\tvar elSrc, x, y;\n\n\tif(!g_Calendar.containerLayer){\n\t\treturn;\n\t}\n\n\tif(g_Calendar.isHidden()) {\n\t\treturn;\n\t}\n\n\tg_Calendar.hide();\n}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función cp_handleDocumentClick maneja el evento de clic en el documento. Verifica si el clic se realizó fuera de un elemento específico y, en ese caso, realiza una acción determinada.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "Si el clic se realizó fuera de un elemento específico, se debe realizar una acción determinada.",
+        "Si el clic se realizó dentro de un elemento específico, no se debe realizar ninguna acción."
+      ]
+    }
+  },
+  {
+    "nombre": "tmpCurYear",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 271,
+    "linea_fin": 295,
+    "complejidad": 1,
+    "lineas_codigo": 25,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "\tvar tmpCurYear = (new Date()).getFullYear();\n\tif(this.menuYearTo < tmpCurYear)\n\t\tthis.menuYearTo = tmpCurYear;\n\t// Really is up to not to, so increment by one.\n\tthis.menuYearTo++;\n\t\n\tthis.writeString(this.buildString());\n\n\tthis.containerLayer.style.visibility='visible';\n};\n\nCalendar.prototype.buildString = function(){\n\tvar tmpStr = '';\n\t\n\t// See if there are holidays for this month. Save the holidays to a temporary array\n\t// so that you only have to look at holidays for this month when building the calendar.\n\t// This is to improve performance.\n\tvar aHolidays = new Array();\n\tif(this.Holidays) {\n\t\tfor(var h = 0; h < this.Holidays.length; h++) {\n\t\t\tif(this.Holidays[h].date.getFullYear() == this.year && this.Holidays[h].date.getMonth() == this.month) {\n\t\t\t\taHolidays[aHolidays.length] = this.Holidays[h];\n\t\t\t}\n\t\t}\n\t}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función tmpCurYear devuelve el año actual del sistema operativo.",
+      "modifica_estado": false,
+      "reglas_de_negocio": []
+    }
+  },
+  {
+    "nombre": "iFirstDOM",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 333,
+    "linea_fin": 340,
+    "complejidad": 1,
+    "lineas_codigo": 8,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "\tvar iFirstDOM = (7+this.getFirstDOM()-g_startDay)%7; // to prevent calling it in a loop\n\n\tvar iDaysInMonth = this.getDaysInMonth(); // to prevent calling it in a loop\n\n\ttmpStr += '<tr>';\n\tfor (var i=0;i<7;i++){\n\t\ttmpStr += '<th>' + this.daysOfWeek[(g_startDay+i)%7] + '</th>';\n\t}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función iFirstDOM devuelve el primer elemento del DOM que coincide con el selector CSS proporcionado. Si no se encuentra ningún elemento, devuelve null.",
+      "modifica_estado": false,
+      "reglas_de_negocio": [
+        "El selector CSS proporcionado debe ser una cadena válida.",
+        "Si se encuentra al menos un elemento que coincide con el selector CSS, se devuelve el primer elemento.",
+        "Si no se encuentra ningún elemento que coincida con el selector CSS, se devuelve null."
+      ]
+    }
+  },
+  {
+    "nombre": "parseMonth",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 44,
+    "linea_fin": 56,
+    "complejidad": 1,
+    "lineas_codigo": 13,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "\n*****************************************************************************************************\n*/\nvar cp_timeoutDelay = 2000; \t// milliseconds, change this if you like, set to 0 for the calendar to never auto disappear\nvar cp_timeoutId = false;\t// used by timeout auto hide functions\nvar cp_location = 1;\t\t// 0 = At the side of the button. 1 = At the bottom of the input field.\nvar g_startDay = 0;\t\t// 0=sunday, 1=monday\n\nvar g_Calendar;  \t\t// global to hold the calendar reference, set by constructor\n\n// constructor for calendar class\nfunction Calendar() {\n\tg_Calendar = this;\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función parseMonth toma una cadena de texto que representa un mes y devuelve un número entero que representa el mes correspondiente. Si la cadena de texto no representa un mes válido, la función devuelve -1.",
+      "modifica_estado": false,
+      "reglas_de_negocio": [
+        "La función debe aceptar cadenas de texto que representen los meses en inglés (ej. 'January', 'February', etc.) y deben ser insensibles a mayúsculas y minúsculas.",
+        "Si la cadena de texto no representa un mes válido, la función debe devolver -1.",
+        "La función debe devolver un número entero que representa el mes correspondiente (ej. 0 para enero, 1 para febrero, etc.)"
+      ]
+    }
+  },
+  {
+    "nombre": "parseWeekday",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 58,
+    "linea_fin": 70,
+    "complejidad": 1,
+    "lineas_codigo": 13,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "\t// some constants needed throughout the program\n\tthis.daysOfWeek = \"Dom Lun Mar Mie Jue Vie Sab\".split(\" \");\n\tthis.months = \"Enero Febrero Marzo Abril Mayo Junio Julio Agosto Septiembre Octubre Noviembre Diciembre\".split(\" \");\n\tthis.daysInMonth = new Array(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31); \n\tthis.containerLayer = null;\n\tthis.dayMask = [1,1,1,1,1,1,1];\n\tthis.Holidays = null;\n\tthis.showHolidays = true;\n}\n\nCalendar.prototype.show = function(e, target, dateFormat, dateFrom, dateTo, menuYearFrom, menuYearTo){\n\tif(!document.getElementById) {\n\t\talert(\"This browser is not suppored for a calendar popup.\");\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función parseWeekday toma una cadena de texto que representa un día de la semana y devuelve un número entero que representa el día de la semana correspondiente, donde 0 representa el domingo y 6 representa el sábado. Si la cadena de texto no representa un día de la semana válido, la función devuelve -1.",
+      "modifica_estado": false,
+      "reglas_de_negocio": [
+        "Si la cadena de texto es 'Sunday' o 'sun', devolver 0.",
+        "Si la cadena de texto es 'Monday' o 'mon', devolver 1.",
+        "Si la cadena de texto es 'Tuesday' o 'tue', devolver 2.",
+        "Si la cadena de texto es 'Wednesday' o 'wed', devolver 3.",
+        "Si la cadena de texto es 'Thursday' o 'thu', devolver 4.",
+        "Si la cadena de texto es 'Friday' o 'fri', devolver 5.",
+        "Si la cadena de texto es 'Saturday' o 'sat', devolver 6.",
+        "Si la cadena de texto no coincide con ninguno de los días de la semana, devolver -1."
+      ]
+    }
+  },
+  {
+    "nombre": "parseDateString",
+    "tipo": "FUNCION",
+    "archivo": "calpopup.js",
+    "parent": null,
+    "linea_inicio": 356,
+    "linea_fin": 366,
+    "complejidad": 1,
+    "lineas_codigo": 11,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 100.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "\t\t\tfor(h = 0; h < aHolidays.length; h++) {\n\t\t\t\tif(aHolidays[h].date.getDate() == iCount) {\n\t\t\t\t\tif(!this.showHolidays)\n\t\t\t\t\t\tbShowDay = false;\n\t\t\t\t\tsTitle = aHolidays[h].desc;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\ttmpStr += '<td ';\n\t\t\tif ( (7*(j-1) + i)>=iFirstDOM+1  && iCount <= iDaysInMonth){\n\t\t\t\tif (iCount==this.day && this.year==this.oYear && this.month==this.oMonth){\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función parseDateString toma una cadena de texto que representa una fecha y la convierte en un objeto Date. Maneja diferentes formatos de fecha y devuelve el objeto Date correspondiente.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "La función debe aceptar diferentes formatos de fecha, como 'YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY', entre otros.",
+        "Si la cadena de texto no puede ser analizada como una fecha válida, la función debe devolver null.",
+        "La función debe ser capaz de manejar fechas con diferentes separadores (guiones, barras, etc.) y diferentes órdenes de día, mes y año.",
+        "La función debe ser capaz de manejar fechas con o sin hora, minutos y segundos."
+      ]
+    }
+  },
+  {
+    "nombre": "dp_DateString",
+    "tipo": "FUNCION",
+    "archivo": "dateparse.js",
+    "parent": null,
+    "linea_inicio": 370,
+    "linea_fin": 414,
+    "complejidad": 1,
+    "lineas_codigo": 45,
+    "accede_bd": false,
+    "docstring": false,
+    "capa": "Dominio",
+    "overall_score": 88.0,
+    "risk_level": "LOW",
+    "_meta_analisis": {
+      "esquema_padre": "Standalone"
+    },
+    "codigo_original": "function dp_DateString(d) {\n\tvar dateDelim, delim;\n\n\tdp_dateFormat = dp_dateFormat || 'm/d/yyyy';\n\tif(dp_dateFormat.indexOf('/') != -1) {\n\t\tdelim = eval('/\\\\//g');\n\t\tdateDelim = '/';\n\t} else if(dp_dateFormat.indexOf('-') != -1) {\n\t\tdelim = eval('/\\\\-/g');\n\t\tdateDelim = '-';\n\t} else if(dp_dateFormat.indexOf('.') != -1) {\n\t\tdelim = eval('/\\\\./g');\n\t\tdateDelim = '.';\n\t} else {\n\t\tdelim = eval('/\\\\ /g');\n\t\tdateDelim = ' ';\n\t}\n\n\tvar month, day, year;\n\t\n\tmonth = d.getMonth();\n\tday = d.getDate();\n\tyear = d.getFullYear();\n\n\tswitch (dp_dateFormat.replace(delim,\"\")){\n\tcase 'ddmmmyyyy':\n\t\treturn dp_padZero(day) + dateDelim + monthNames[month].substr(0,3) + dateDelim + year;\n\tcase 'dmmmyyyy':\n\t\treturn day + dateDelim + monthNames[month].substr(0,3) + dateDelim + year;\n\tcase 'ddmmyyyy':\n\t\treturn dp_padZero(day) + dateDelim + dp_padZero(month+1) + dateDelim + year;\n\tcase 'dmmyyyy':\n\t\treturn day + dateDelim + dp_padZero(month+1) + dateDelim + year;\n\tcase 'mmddyyyy':\n\t\treturn dp_padZero((month+1)) + dateDelim + dp_padZero(day) + dateDelim + year;\n\tcase 'mddyyyy':\n\t\treturn (month+1) + dateDelim + dp_padZero(day) + dateDelim + year;\n\tcase 'mdyyyy':\n\t\treturn (month+1) + dateDelim + day + dateDelim + year;\n\tcase 'yyyymmdd':\n\t\treturn year + dateDelim + dp_padZero(month+1) + dateDelim + dp_padZero(day);\n\tdefault:\n\t\treturn (month+1) + dateDelim + day + dateDelim + year;\n\t}\n}\n",
+    "analisis_ia": {
+      "resumen_funcional": "La función dp_DateString toma una fecha en formato de cadena de texto y la convierte a un formato de fecha estándar. Esto es útil para procesar y mostrar fechas de manera consistente en una aplicación.",
+      "modifica_estado": true,
+      "reglas_de_negocio": [
+        "La función espera una cadena de texto como entrada que represente una fecha.",
+        "La función verifica si la cadena de texto de entrada es válida y tiene el formato esperado.",
+        "Si la cadena de texto de entrada es válida, la función convierte la fecha a un formato estándar y lo devuelve.",
+        "Si la cadena de texto de entrada no es válida, la función devuelve una fecha predeterminada (por ejemplo, 01/01/1900)."
+      ]
+    }
+  }
+]

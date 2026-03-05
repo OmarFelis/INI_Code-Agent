@@ -3,42 +3,65 @@ import asyncio
 import os
 import aiohttp
 
-# --- CONFIGURACIÓN MOCK PARA LLM ---
-# En producción esto usará boto3 para AWS Bedrock o el cliente de OpenAI.
-# Simularemos un endpoint local o un mock delay.
+import boto3
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "llama3.1" # o el modelo que tengas local, o mock
+# --- CONFIGURACIÓN AWS BEDROCK ---
+REGION = "us-east-1"
+MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0" # Modelo rápido y económico
+PROFILE_NAME = "AmazonBedrockLimitedAccess-460896925620"
 
-async def mock_llm_call(session, prompt: str, function_name: str) -> dict:
+def get_bedrock_client():
+    session = boto3.Session(profile_name=PROFILE_NAME)
+    return session.client('bedrock-runtime', region_name=REGION)
+
+async def bedrock_llm_call(prompt: str, function_name: str) -> dict:
     """
-    Simula o ejecuta una llamada real a un LLM asíncronamente.
+    Ejecuta una llamada asíncrona real a Claude 3 Haiku en AWS Bedrock
+    usando asyncio.to_thread para no bloquear el Event Loop con boto3 (que es síncrono).
     """
-    try:
-        # Intento conectarme a un Ollama local si existe (para pruebas reales)
+    def _invoke():
+        client = get_bedrock_client()
         payload = {
-            "model": MODEL_NAME,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json"
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 512,
+            "temperature": 0.1, # Muy baja variabilidad para que respete el JSON
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
         }
-        async with session.post(OLLAMA_URL, json=payload, timeout=5) as response:
-            if response.status == 200:
-                data = await response.json()
-                return json.loads(data['response'])
-    except Exception:
-        # Fallback a un mock si Ollama no está corriendo
-        pass
+        
+        response = client.invoke_model(
+            modelId=MODEL_ID,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json"
+        )
+        
+        body = json.loads(response['body'].read().decode('utf-8'))
+        response_text = body['content'][0]['text']
+        
+        # Limpiar posible basura fuera del JSON que el LLM pueda agregar (markdown)
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].strip()
+            
+        return json.loads(response_text)
 
-    await asyncio.sleep(0.5) # Simula latencia
-    return {
-        "resumen_funcional": f"Función {function_name} procesada correctamente.",
-        "modifica_estado": "update" in function_name.lower() or "save" in function_name.lower(),
-        "reglas_de_negocio": [
-            f"Validación 1 para {function_name}",
-            f"Condición de error encontrada en {function_name}"
-        ]
-    }
+    try:
+        # Correr la función síncrona de boto3 en un thread pool asíncrono
+        return await asyncio.to_thread(_invoke)
+    except Exception as e:
+        print(f"BOTO3 ERROR DETAILED: {e}")
+        return {
+             "error": str(e),
+             "resumen_funcional": f"Falló Bedrock para {function_name}",
+             "modifica_estado": False,
+             "reglas_de_negocio": []
+        }
 
 # --- PROMPTS ---
 PROMPT_TACTICO = """
@@ -95,15 +118,15 @@ def filtrar_unidades_analizables(unidades_logicas: list) -> list:
     return analizables
 
 # --- ESTRATEGIA 4: ORQUESTACIÓN ASÍNCRONA BATCH ---
-async def analizar_lote_concurrente(funciones_batch: list, session) -> list:
+async def analizar_lote_concurrente(funciones_batch: list) -> list:
     tareas = []
     for func in funciones_batch:
         prompt = PROMPT_TACTICO.format(
             nombre_funcion=func['nombre'],
             esquema_clase=func['_meta_analisis']['esquema_padre']
         )
-        # LLamada asíncrona concurrente
-        tareas.append(mock_llm_call(session, prompt, func['nombre']))
+        # LLamada asíncrona concurrente a Bedrock
+        tareas.append(bedrock_llm_call(prompt, func['nombre']))
         
     # Ejecuta todo al mismo tiempo y espera que terminen
     resultados = await asyncio.gather(*tareas, return_exceptions=True)
@@ -126,6 +149,8 @@ async def run_analysis(file_path: str):
     data = json.loads(raw_data)
         
     todas_unidades = data['results'].get('unidades_logicas', [])
+    todos_archivos = data['results'].get('archivos_fuente', [])
+    mapa_archivos = {f['nombre']: f['ruta_archivo'] for f in todos_archivos}
     print(f"--- Total unidades encontradas en JSON: {len(todas_unidades)}")
     
     # 1. Aplicamos Filtro Inteligente (Estrategia 1)
@@ -140,22 +165,55 @@ async def run_analysis(file_path: str):
     batch_prueba = filtradas[:10]
     print(f"--- Ejecutando lote de {len(batch_prueba)} funciones vía LLM (Asyncio)...")
     
-    async with aiohttp.ClientSession() as session:
-        # 4. Análisis Concurrente (Estrategia 4)
-        resultados_ia = await analizar_lote_concurrente(batch_prueba, session)
+    # 4. Análisis Concurrente en Bedrock (Estrategia 4)
+    resultados_ia = await analizar_lote_concurrente(batch_prueba)
         
     # Mostrar resultados
     print("\n--- Resultados de la IA ---")
+    resultados_finales = []
+    
+    REPO_BASE_PATH = "C:/FLOTAS - Assessments/flotas-mod_empresa"
+
     for idx, func in enumerate(batch_prueba):
         nombre = func['nombre']
         res_ia = resultados_ia[idx]
+        
+        # Extraer el codigo original
+        codigo_original = "Código no encontrado"
+        archivo_nombre = func.get('archivo')
+        ruta_relativa = mapa_archivos.get(archivo_nombre)
+        if ruta_relativa:
+            ruta_completa = os.path.join(REPO_BASE_PATH, ruta_relativa)
+            if os.path.exists(ruta_completa):
+                try:
+                    with open(ruta_completa, 'r', encoding='utf-8', errors='ignore') as f_src:
+                        lineas = f_src.readlines()
+                        inicio = max(0, func.get('linea_inicio', 1) - 1)
+                        fin = func.get('linea_fin', len(lineas))
+                        codigo_original = "".join(lineas[inicio:fin])
+                except Exception as e:
+                    codigo_original = f"Error leyendo: {e}"
+                    
+        func['codigo_original'] = codigo_original
+
         print(f"\n--- Análisis de: {func['_meta_analisis']['esquema_padre']}::{nombre} ---")
         if isinstance(res_ia, Exception):
              print(f"ERROR LLM: {res_ia}")
+             func['analisis_ia'] = {'error': str(res_ia)}
         else:
              print(f"Resumen: {res_ia.get('resumen_funcional')}")
              print(f"Modifica Estado: {res_ia.get('modifica_estado')}")
              print("Reglas: " + ", ".join(res_ia.get('reglas_de_negocio', [])))
+             func['analisis_ia'] = res_ia
+             
+        resultados_finales.append(func)
+
+    # Guardar en archivo para inspección del usuario
+    output_path = 'data/resultado_agente_ia.json'
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(resultados_finales, f, indent=2, ensure_ascii=False)
+        
+    print(f"\n--- RESULTADO OBTENIDO: El análisis completo se ha guardado en '{output_path}'")
 
 if __name__ == '__main__':
     # Necesario para evitar problemas en Windows con asyncio

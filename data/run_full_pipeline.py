@@ -29,14 +29,14 @@ def fase1_escaneo_ast(ruta_local: str, output_file: str) -> bool:
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(response_data)
-        print(f"✅ FASE 1 COMPLETADA: Resultado JSON guardado en {output_file}")
+        print(f"--- FASE 1 COMPLETADA: Resultado JSON guardado en {output_file}")
         return True
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
-        print(f"❌ Error Fase 1 (HTTP {e.code}): {error_body}")
+        print(f"ERROR Fase 1 (HTTP {e.code}): {error_body}")
         return False
     except Exception as e:
-        print(f"❌ Error inesperado Fase 1: {e}")
+        print(f"ERROR inesperado Fase 1: {e}")
         return False
 
 def fase2_agentic_llm(json_file: str):
@@ -49,9 +49,9 @@ def fase2_agentic_llm(json_file: str):
     try:
         # Llamamos directo a la función de tu prototipo!
         asyncio.run(ai_prototype.run_analysis(json_file))
-        print(f"✅ FASE 2 COMPLETADA")
+        print(f"--- FASE 2 COMPLETADA")
     except Exception as e:
-        print(f"❌ Error en Fase 2: {e}")
+        print(f"ERROR en Fase 2: {e}")
 
 
 if __name__ == '__main__':
@@ -62,7 +62,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     print("=====================================================")
-    print(" 🚀 PIPELINE CODE-AGENT E2E (MOCK AI PROTOTYPE)")
+    print(" --- PIPELINE CODE-AGENT E2E (REAL AWS BEDROCK) ---")
     print("=====================================================")
     
     exito_fase1 = fase1_escaneo_ast(args.path, args.out)
