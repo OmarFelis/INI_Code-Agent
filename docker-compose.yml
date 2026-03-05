@@ -1,0 +1,49 @@
+# ============================================
+# Code-Agent — Docker Compose (desarrollo local)
+# ============================================
+# Levanta: API FastAPI + PostgreSQL 15
+# Uso: docker compose up --build
+
+services:
+  # --- PostgreSQL ---
+  db:
+    image: postgres:15-alpine
+    container_name: codeagent-db
+    environment:
+      POSTGRES_DB: codeagent_db
+      POSTGRES_USER: codeagent
+      POSTGRES_PASSWORD: codeagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codeagent -d codeagent_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Code-Agent API ---
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codeagent-api
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://codeagent:codeagent@db:5432/codeagent_db
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount source for hot-reload during development
+      - ./src:/app/src
+      # Mount entire C:/ drive as read-only so any repo can be scanned
+      # Example: C:\mvpRBAMOTORBACK → /host/mvpRBAMOTORBACK
+      - C:/:/host:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:

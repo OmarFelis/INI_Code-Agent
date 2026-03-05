@@ -1,0 +1,38 @@
+"""
+Code-Agent — API Request schemas.
+"""
+
+from pydantic import BaseModel, Field
+
+
+class ScanRequest(BaseModel):
+    """POST /api/v1/scan request body."""
+
+    project_path: str = Field(
+        ...,
+        description="Ruta local al repositorio del microservicio",
+        examples=["C:/repos/acs-service"],
+    )
+    branch: str = Field(
+        default="main",
+        description="Rama del repositorio a analizar",
+    )
+    activo_id: str = Field(
+        ...,
+        description="UUID del activo en infra.activos",
+        examples=["01961234-0000-7000-8000-000000000001"],
+    )
+    aplicacion_id: str = Field(
+        ...,
+        description="UUID de la aplicación en producto.aplicaciones",
+        examples=["01961234-0000-7000-8000-000000000001"],
+    )
+    microservice_name: str = Field(
+        ...,
+        description="Nombre legible del microservicio",
+        examples=["ACS"],
+    )
+    repo_url: str | None = Field(
+        default=None,
+        description="URL del repositorio Git (futuro — si se provee, se clona en vez de usar project_path)",
+    )

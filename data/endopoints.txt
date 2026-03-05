@@ -1,0 +1,4 @@
+infra_detalle.archivos_fuente - https://lrxgmddycqvq3ql6vqgct3p5za0ityil.lambda-url.us-east-1.on.aws/alignetone_dev_v2/entities/archivos_fuente
+infra_detalle.escaneos - https://lrxgmddycqvq3ql6vqgct3p5za0ityil.lambda-url.us-east-1.on.aws/alignetone_dev_v2/entities/escaneos
+infra_detalle.unidades_logicas - https://lrxgmddycqvq3ql6vqgct3p5za0ityil.lambda-url.us-east-1.on.aws/alignetone_dev_v2/entities/unidades_logicas
+
