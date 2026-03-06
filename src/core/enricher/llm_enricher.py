@@ -40,6 +40,34 @@ Devuelve EXACTAMENTE este formato JSON purista sin bloques de markdown:
 }}
 """
 
+PROMPT_ARCHIVO = """
+Eres un Arquitecto de Software Experto. Tu tarea es analizar un archivo de código fuente completo y generar un análisis estructurado.
+
+Archivo: {nombre_archivo}
+Lenguaje: {lenguaje}
+Capa detectada: {capa}
+
+<codigo_completo>
+{codigo_completo}
+</codigo_completo>
+
+INSTRUCCIONES: Analiza el archivo completo y devuelve EXACTAMENTE este formato JSON purista sin bloques de markdown:
+{{
+  "resumen_archivo": "descripción concisa en español del propósito general del archivo",
+  "responsabilidad_principal": "string corto: ej. Controlador REST, Servicio de negocio, Repositorio de datos, Modelo de dominio, Configuración, Utilidad",
+  "dependencias_clave": ["lista de imports/dependencias críticas del archivo"],
+  "patrones_detectados": ["ej. Singleton, Repository, Factory, Observer"],
+  "endpoints_expuestos": [
+    {{
+      "metodo": "GET/POST/PUT/DELETE",
+      "ruta": "/api/ejemplo",
+      "descripcion": "breve descripción"
+    }}
+  ],
+  "observaciones": ["notas relevantes sobre calidad, seguridad o mejoras"]
+}}
+"""
+
 def get_bedrock_client():
     """Inicializa la sesión de Boto3 con las credenciales mapeadas del perfil."""
     try:
@@ -96,30 +124,34 @@ async def bedrock_llm_call(prompt: str, function_name: str) -> dict:
              "reglas_de_negocio": []
         }
 
-async def analyze_functions_batch(funciones: List[Dict]) -> List[Dict]:
+async def analyze_functions_batch(funciones: List[Dict], max_concurrent: int = 5) -> List[Dict]:
     """
     Toma una lista de diccionarios de funciones y lanza el prompt para 
     cada uno de forma concurrente, devolviendo los resultados procesados.
+    Usa un semáforo para controlar la concurrencia máxima.
     """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def _limited_call(prompt, name):
+        async with semaphore:
+            return await bedrock_llm_call(prompt, name)
+    
     tareas = []
     
-    # Preparamos todos los llamados a la API de LLM (Orquestación asíncrona)
     for func in funciones:
         prompt = PROMPT_TACTICO.format(
             nombre_funcion=func.get('nombre_funcion'),
             esquema_clase=func.get('componente', 'Desconocido'),
             codigo_original=func.get('codigo_original', 'Sin código')
         )
-        tareas.append(bedrock_llm_call(prompt, func.get('nombre_funcion')))
+        tareas.append(_limited_call(prompt, func.get('nombre_funcion')))
         
     logger.info("llm_batch_started", size=len(tareas))
-    # Ejecuta todo al mismo tiempo en paralelo, resolviendo los Futures de Bedrock
     resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
     logger.info("llm_batch_completed")
 
     resultados_finales = []
     
-    # Acoplamos el input con el output y mapeamos el Pydantic format indirectamente
     for idx, func in enumerate(funciones):
         res_ia = resultados_ia[idx]
         
@@ -127,6 +159,53 @@ async def analyze_functions_batch(funciones: List[Dict]) -> List[Dict]:
             "nombre_funcion": func.get('nombre_funcion'),
             "componente": func.get('componente'),
             "archivo": func.get('archivo'),
+            "analisis_ia": {}
+        }
+        
+        if isinstance(res_ia, Exception):
+             enriched['analisis_ia'] = {'error': str(res_ia)}
+        else:
+             enriched['analisis_ia'] = res_ia
+             
+        resultados_finales.append(enriched)
+
+    return resultados_finales
+
+
+async def analyze_files_batch(archivos: List[Dict], max_concurrent: int = 3) -> List[Dict]:
+    """
+    Toma una lista de diccionarios de archivos y lanza el PROMPT_ARCHIVO 
+    para cada uno con concurrencia controlada.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def _limited_call(prompt, name):
+        async with semaphore:
+            return await bedrock_llm_call(prompt, name)
+    
+    tareas = []
+    
+    for archivo in archivos:
+        prompt = PROMPT_ARCHIVO.format(
+            nombre_archivo=archivo.get('nombre_archivo'),
+            lenguaje=archivo.get('lenguaje', 'Desconocido'),
+            capa=archivo.get('capa', 'Sin clasificar'),
+            codigo_completo=archivo.get('codigo_completo', 'Sin código')
+        )
+        tareas.append(_limited_call(prompt, archivo.get('nombre_archivo')))
+        
+    logger.info("llm_files_batch_started", size=len(tareas))
+    resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
+    logger.info("llm_files_batch_completed")
+
+    resultados_finales = []
+    
+    for idx, archivo in enumerate(archivos):
+        res_ia = resultados_ia[idx]
+        
+        enriched = {
+            "nombre_archivo": archivo.get('nombre_archivo'),
+            "ruta_archivo": archivo.get('ruta_archivo'),
             "analisis_ia": {}
         }
         

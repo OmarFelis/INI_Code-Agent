@@ -1,3 +1,8 @@
 #Comando para ejecutar el trigger de IA despues del scan
 .\.venv\Scripts\python.exe trigger_ai_analysis.py
 
+#Comando para ejecutar el servidor de IA
+.\.venv\Scripts\uvicorn.exe src.api.main:app --reload --port 8001
+
+#Comando para ejecutar el servidor de IA
+.\.venv\Scripts\uvicorn.exe src.api.main:app --reload --port 8001

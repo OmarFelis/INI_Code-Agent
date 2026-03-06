@@ -446,3 +446,203 @@ async def enrich_scan_job(
     background_tasks.add_task(_run_enrichment_background_task, uuid_id, request)
     
     return {"message": "Enrichment job queued successfully", "job_id": job_id}
+
+
+# ── Enrich-All (todas las funciones) ─────────────────────────────
+
+async def _run_enrich_all_background_task(job_id: UUID):
+    """Background task to enrich ALL functions of a scan."""
+    log = logger.bind(job_id=str(job_id), task="ai_enrich_all")
+    
+    try:
+        async with async_session_factory() as session:
+            job = await repository.get_scan_job(session, job_id)
+            if not job or not job.results:
+                log.error("enrich_all_job_not_found_or_empty")
+                return
+            
+            project_path = job.project_path
+            archivos_fuente = job.results.get("archivos_fuente", [])
+            mapa_archivos = {a.get("nombre"): a.get("ruta_archivo") for a in archivos_fuente}
+            
+            unidades = job.results.get("unidades_logicas", [])
+            payload_funciones = []
+            
+            for unit in unidades:
+                if unit.get("tipo") != "FUNCION":
+                    continue
+                if unit.get("analisis_ia"):
+                    continue  # Ya enriquecida, se salta
+                    
+                ruta_relativa = mapa_archivos.get(unit.get("archivo"))
+                if not ruta_relativa:
+                    continue
+                    
+                archivo_absoluto = os.path.join(project_path, ruta_relativa)
+                
+                try:
+                    with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
+                        lines = file_source.readlines()
+                        inicio = unit.get("linea_inicio", 1) - 1
+                        fin = unit.get("linea_fin", len(lines))
+                        codigo_original = "".join(lines[inicio:fin])
+                        
+                        payload_funciones.append({
+                            "nombre_funcion": unit.get("nombre"),
+                            "componente": unit.get("parent") or "Standalone",
+                            "archivo": ruta_relativa,
+                            "lineas": f"{inicio+1}-{fin}",
+                            "codigo_original": codigo_original
+                        })
+                except Exception as e:
+                    log.warning("enrich_all_file_read_error", file=archivo_absoluto, error=str(e))
+                    continue
+                    
+            if not payload_funciones:
+                log.warning("enrich_all_no_functions_to_enrich")
+                return
+                
+            log.info("enrich_all_calling_bedrock", functions=len(payload_funciones))
+            resultados_ia = await llm_enricher.analyze_functions_batch(payload_funciones)
+            
+            ia_lookup = {(r.get("nombre_funcion"), r.get("archivo")): r.get("analisis_ia") for r in resultados_ia}
+            
+            for unit in unidades:
+                ruta_rel = mapa_archivos.get(unit.get("archivo"))
+                key = (unit.get("nombre"), ruta_rel)
+                if key in ia_lookup:
+                    unit["analisis_ia"] = ia_lookup[key]
+
+            await repository.update_scan_job_status(
+                session, job_id, status=job.status, results=job.results
+            )
+            await session.commit()
+            log.info("enrich_all_completed", enriched=len(resultados_ia))
+
+    except Exception as e:
+        log.error("enrich_all_failed", error=repr(e))
+
+
+@router.post(
+    "/{job_id}/enrich-all",
+    status_code=202,
+    summary="Enrich ALL functions using AI",
+    description="Extracts source code of ALL functions and sends them to AWS Bedrock for business rule extraction.",
+)
+async def enrich_all_functions(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Enrich ALL functions of a completed scan job."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    job = await repository.get_scan_job(session, uuid_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job not found: {job_id}")
+    if job.status != "COMPLETED":
+        raise HTTPException(status_code=400, detail="Scan job must be COMPLETED before enrichment.")
+
+    background_tasks.add_task(_run_enrich_all_background_task, uuid_id)
+    
+    total_functions = len([u for u in (job.results or {}).get("unidades_logicas", []) if u.get("tipo") == "FUNCION"])
+    return {"message": f"Enrich-all queued for {total_functions} functions", "job_id": job_id}
+
+
+# ── Enrich-Files (todos los archivos) ────────────────────────────
+
+async def _run_enrich_files_background_task(job_id: UUID):
+    """Background task to enrich ALL files of a scan with file-level AI analysis."""
+    log = logger.bind(job_id=str(job_id), task="ai_enrich_files")
+    
+    try:
+        async with async_session_factory() as session:
+            job = await repository.get_scan_job(session, job_id)
+            if not job or not job.results:
+                log.error("enrich_files_job_not_found_or_empty")
+                return
+            
+            project_path = job.project_path
+            archivos_fuente = job.results.get("archivos_fuente", [])
+            payload_archivos = []
+            
+            for archivo in archivos_fuente:
+                if archivo.get("analisis_ia"):
+                    continue  # Ya enriquecido, se salta
+                    
+                ruta_relativa = archivo.get("ruta_archivo")
+                if not ruta_relativa:
+                    continue
+                    
+                archivo_absoluto = os.path.join(project_path, ruta_relativa)
+                
+                try:
+                    with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
+                        codigo_completo = file_source.read()
+                        
+                        payload_archivos.append({
+                            "nombre_archivo": archivo.get("nombre"),
+                            "ruta_archivo": ruta_relativa,
+                            "lenguaje": archivo.get("lenguaje", "Desconocido"),
+                            "capa": archivo.get("capa", "Sin clasificar"),
+                            "codigo_completo": codigo_completo
+                        })
+                except Exception as e:
+                    log.warning("enrich_files_read_error", file=archivo_absoluto, error=str(e))
+                    continue
+                    
+            if not payload_archivos:
+                log.warning("enrich_files_no_files_to_enrich")
+                return
+                
+            log.info("enrich_files_calling_bedrock", files=len(payload_archivos))
+            resultados_ia = await llm_enricher.analyze_files_batch(payload_archivos)
+            
+            ia_lookup = {r.get("nombre_archivo"): r.get("analisis_ia") for r in resultados_ia}
+            
+            for archivo in archivos_fuente:
+                nombre = archivo.get("nombre")
+                if nombre in ia_lookup:
+                    archivo["analisis_ia"] = ia_lookup[nombre]
+
+            await repository.update_scan_job_status(
+                session, job_id, status=job.status, results=job.results
+            )
+            await session.commit()
+            log.info("enrich_files_completed", enriched=len(resultados_ia))
+
+    except Exception as e:
+        log.error("enrich_files_failed", error=repr(e))
+
+
+@router.post(
+    "/{job_id}/enrich-files",
+    status_code=202,
+    summary="Enrich ALL files using AI",
+    description="Reads full source code of ALL files and sends them to AWS Bedrock for file-level analysis.",
+)
+async def enrich_all_files(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Enrich ALL files of a completed scan job with file-level AI analysis."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    job = await repository.get_scan_job(session, uuid_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job not found: {job_id}")
+    if job.status != "COMPLETED":
+        raise HTTPException(status_code=400, detail="Scan job must be COMPLETED before enrichment.")
+
+    background_tasks.add_task(_run_enrich_files_background_task, uuid_id)
+    
+    total_files = len((job.results or {}).get("archivos_fuente", []))
+    return {"message": f"Enrich-files queued for {total_files} files", "job_id": job_id}
+

@@ -31,6 +31,7 @@ class ArchivoFuenteDetail(BaseModel):
     llamadas_externas: int = 0
     complejidad_ciclomatica: int | None = None
     lineas_codigo: int | None = None
+    analisis_ia: dict | None = None
 
 
 class UnidadLogicaDetail(BaseModel):
