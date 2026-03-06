@@ -48,6 +48,7 @@ class UnidadLogicaDetail(BaseModel):
     capa: str | None = None
     overall_score: float | None = None
     risk_level: str | None = None
+    analisis_ia: dict | None = None
 
 
 class EscaneoSummary(BaseModel):

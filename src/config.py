@@ -35,6 +35,26 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Code-Agent")
     app_version: str = Field(default="1.0.0")
 
+    # --- Security API ---
+    api_secret_token: str = Field(
+        default="local-dev-token",
+        description="Secret Bearer Token to access the API",
+    )
+
+    # --- Security SCM ---
+    allowed_git_domains: str = Field(
+        default="github.com,bitbucket.org",
+        description="Comma-separated list of allowed domains for repo_url",
+    )
+    git_username: str | None = Field(
+        default=None,
+        description="Username for Git cloning of private repositories",
+    )
+    git_token: str | None = Field(
+        default=None,
+        description="App Password / Access Token for Git cloning",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

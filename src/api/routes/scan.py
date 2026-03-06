@@ -14,7 +14,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.scan_request import ScanRequest
+from src.api.schemas.scan_request import ScanRequest, EnrichmentRequest
 from src.api.schemas.scan_response import (
     ScanAcceptedResponse,
     ScanResults,
@@ -25,10 +25,17 @@ from src.api.schemas.scan_response import (
 )
 from src.db.session import get_session, async_session_factory
 from src.db import repository
+from src.core.enricher import llm_enricher
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/api/v1/scan", tags=["scan"])
+from src.api.dependencies.auth import verify_api_token
+
+router = APIRouter(
+    prefix="/api/v1/scan", 
+    tags=["scan"],
+    dependencies=[Depends(verify_api_token)]
+)
 
 
 def _build_results(result) -> dict:
@@ -134,23 +141,35 @@ def _build_results(result) -> dict:
 async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
     """Background task that runs the pipeline and updates the job status."""
     from src.core.analyzers.pipeline import run as run_pipeline
+    from src.core.scm.scm_adapter import clone_repository, cleanup_repository
+    
     log = logger.bind(
         job_id=str(job_id),
         microservice=request.microservice_name,
         project_path=request.project_path,
+        repo_url=request.repo_url,
     )
 
     log.info("background_scan_started")
 
     async with async_session_factory() as session:
+        temp_repo_path = None
         try:
             # Update status to IN_PROGRESS
             await repository.update_scan_job_status(session, job_id, status="IN_PROGRESS")
             await session.commit()
+            
+            project_path_to_scan = request.project_path
+            
+            if request.repo_url:
+                temp_repo_path = os.path.abspath(f"tmp_repos/{job_id}")
+                log.info("cloning_repository", repo_url=request.repo_url, temp_repo_path=temp_repo_path)
+                await clone_repository(request.repo_url, temp_repo_path)
+                project_path_to_scan = temp_repo_path
 
             # Run pipeline
             result = await run_pipeline(
-                project_path=request.project_path,
+                project_path=project_path_to_scan,
                 activo_id=request.activo_id,
                 aplicacion_id=request.aplicacion_id,
                 microservice_name=request.microservice_name,
@@ -182,7 +201,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             )
             
         except Exception as e:
-            log.error("background_scan_failed", error=str(e))
+            log.error("background_scan_failed", error=repr(e))
             # Fallback update to FAILED if possible
             try:
                 await repository.update_scan_job_status(
@@ -194,6 +213,10 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 await session.commit()
             except Exception as e_inner:
                 log.error("background_scan_failed_to_update_status", error=str(e_inner))
+        finally:
+            if temp_repo_path:
+                log.info("cleaning_up_temporary_repository", temp_repo_path=temp_repo_path)
+                cleanup_repository(temp_repo_path)
 
 
 @router.post(
@@ -214,7 +237,22 @@ async def run_scan(
         project_path=request.project_path,
     )
 
-    # Validate project_path exists locally
+    # Validate domain allowed if repo_url is passed
+    if request.repo_url:
+        from urllib.parse import urlparse
+        from src.config import settings
+        
+        parsed_url = urlparse(request.repo_url)
+        domain = parsed_url.netloc.split(':')[0]
+        allowed_domains = [d.strip() for d in settings.allowed_git_domains.split(',')]
+        
+        if not any(domain.endswith(d) for d in allowed_domains):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Domain '{domain}' is not in the allowed list: {settings.allowed_git_domains}"
+            )
+            
+    # Validate project_path exists locally tracking git
     if not request.repo_url and not os.path.isdir(request.project_path):
         raise HTTPException(
             status_code=400,
@@ -298,3 +336,113 @@ async def list_scans(
         )
         for j in jobs
     ]
+
+async def _run_enrichment_background_task(job_id: UUID, request: EnrichmentRequest):
+    """Background task to extract code and run AI enrichment."""
+    log = logger.bind(job_id=str(job_id), task="ai_enrichment")
+    
+    try:
+        async with async_session_factory() as session:
+            job = await repository.get_scan_job(session, job_id)
+            if not job or not job.results:
+                log.error("enrichment_job_not_found_or_empty")
+                return
+            
+            project_path = job.project_path
+            
+            archivos_fuente = job.results.get("archivos_fuente", [])
+            mapa_archivos = {a.get("nombre"): a.get("ruta_archivo") for a in archivos_fuente}
+            
+            unidades = job.results.get("unidades_logicas", [])
+            payload_funciones = []
+            
+            for func_req in request.funciones:
+                unit = next((u for u in unidades if u.get("nombre") == func_req.nombre and u.get("archivo") == func_req.archivo), None)
+                if not unit:
+                    log.warning("enrichment_unit_not_found", function=func_req.nombre, file=func_req.archivo)
+                    continue
+                
+                ruta_relativa = mapa_archivos.get(func_req.archivo)
+                if not ruta_relativa:
+                    log.warning("enrichment_file_path_not_found", file=func_req.archivo)
+                    continue
+                    
+                archivo_absoluto = os.path.join(project_path, ruta_relativa)
+                
+                try:
+                    with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
+                        lines = file_source.readlines()
+                        inicio = unit.get("linea_inicio", 1) - 1
+                        fin = unit.get("linea_fin", len(lines))
+                        
+                        codigo_original = "".join(lines[inicio:fin])
+                        
+                        payload_funciones.append({
+                            "nombre_funcion": unit.get("nombre"),
+                            "componente": unit.get("parent") or "Standalone",
+                            "archivo": ruta_relativa,
+                            "lineas": f"{inicio+1}-{fin}",
+                            "codigo_original": codigo_original
+                        })
+                except Exception as e:
+                    log.error("enrichment_file_read_error", file=archivo_absoluto, error=str(e))
+                    continue
+                    
+            if not payload_funciones:
+                log.error("enrichment_no_code_extracted")
+                return
+                
+            log.info("enrichment_calling_bedrock", functions=len(payload_funciones))
+            resultados_ia = await llm_enricher.analyze_functions_batch(payload_funciones)
+            
+            ia_lookup = {(r.get("nombre_funcion"), r.get("archivo")): r.get("analisis_ia") for r in resultados_ia}
+            
+            # Map back to units
+            for unit in unidades:
+                ruta_rel = mapa_archivos.get(unit.get("archivo"))
+                key = (unit.get("nombre"), ruta_rel)
+                if key in ia_lookup:
+                    unit["analisis_ia"] = ia_lookup[key]
+
+            # Save modified results back to DB
+            await repository.update_scan_job_status(
+                session,
+                job_id,
+                status=job.status, 
+                results=job.results
+            )
+            await session.commit()
+            log.info("enrichment_completed_successfully")
+
+    except Exception as e:
+        log.error("background_enrichment_failed", error=str(e))
+
+
+@router.post(
+    "/{job_id}/enrich",
+    status_code=202,
+    summary="Enrich specific functions using AI",
+    description="Extracts source code and sends it to AWS Bedrock for business rule extraction.",
+)
+async def enrich_scan_job(
+    job_id: str,
+    request: EnrichmentRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Enrich selected functions of a completed scan job."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    job = await repository.get_scan_job(session, uuid_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job not found: {job_id}")
+
+    if job.status != "COMPLETED":
+        raise HTTPException(status_code=400, detail="Scan job must be COMPLETED before enrichment.")
+
+    background_tasks.add_task(_run_enrichment_background_task, uuid_id, request)
+    
+    return {"message": "Enrichment job queued successfully", "job_id": job_id}

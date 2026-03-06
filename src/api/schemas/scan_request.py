@@ -36,3 +36,13 @@ class ScanRequest(BaseModel):
         default=None,
         description="URL del repositorio Git (futuro — si se provee, se clona en vez de usar project_path)",
     )
+
+class FunctionToEnrich(BaseModel):
+    nombre: str = Field(..., description="Nombre de la función a enriquecer (ej. _evaluate_autenticacion_rules)")
+    archivo: str = Field(..., description="Nombre base del archivo de la unidad lógica")
+
+class EnrichmentRequest(BaseModel):
+    funciones: list[FunctionToEnrich] = Field(
+        ..., 
+        description="Lista de funciones seleccionadas del escaneo previo para enviar al LLM"
+    )
