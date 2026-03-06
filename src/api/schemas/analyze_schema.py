@@ -12,10 +12,14 @@ class AnalyzeRequest(BaseModel):
     project_path: str = Field(..., description="Project repository path for context logging")
     funciones: List[FunctionSnippet] = Field(..., description="Lista de funciones a enriquecer")
 
+class BusinessRule(BaseModel):
+    descripcion: str = Field(..., description="Explicación en lenguaje natural de la regla de negocio")
+    codigo_relacionado: str = Field(..., description="El fragmento de código exacto (snippet) que detona esta regla")
+
 class AIAnalysisResult(BaseModel):
     resumen_funcional: str = Field(..., description="Explicación en lenguaje natural")
     modifica_estado: bool = Field(..., description="True si la función altera estado, BD o variables globales")
-    reglas_de_negocio: List[str] = Field(default_factory=list, description="Lista de reglas identificadas por la IA")
+    reglas_de_negocio: List[BusinessRule] = Field(default_factory=list, description="Lista de reglas identificadas por la IA con su código")
     error: Optional[str] = Field(None, description="Mensaje de error si la IA falló para este ítem")
 
 class EnrichedFunction(BaseModel):

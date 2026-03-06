@@ -11,18 +11,19 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.scan_request import ScanRequest
 from src.api.schemas.scan_response import (
+    ScanAcceptedResponse,
     ScanResults,
     EscaneoSummary,
     ArchivoFuenteDetail,
     UnidadLogicaDetail,
     ScanJobListItem,
 )
-from src.db.session import get_session
+from src.db.session import get_session, async_session_factory
 from src.db import repository
 
 logger = structlog.get_logger()
@@ -130,45 +131,97 @@ def _build_results(result) -> dict:
     }
 
 
+async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
+    """Background task that runs the pipeline and updates the job status."""
+    from src.core.analyzers.pipeline import run as run_pipeline
+    log = logger.bind(
+        job_id=str(job_id),
+        microservice=request.microservice_name,
+        project_path=request.project_path,
+    )
+
+    log.info("background_scan_started")
+
+    async with async_session_factory() as session:
+        try:
+            # Update status to IN_PROGRESS
+            await repository.update_scan_job_status(session, job_id, status="IN_PROGRESS")
+            await session.commit()
+
+            # Run pipeline
+            result = await run_pipeline(
+                project_path=request.project_path,
+                activo_id=request.activo_id,
+                aplicacion_id=request.aplicacion_id,
+                microservice_name=request.microservice_name,
+                aone_client=None,
+            )
+
+            # Build response
+            results_dict = _build_results(result)
+
+            # Update DB to COMPLETED
+            await repository.update_scan_job_status(
+                session,
+                job_id,
+                status="COMPLETED",
+                total_files=result.total_files,
+                processed_files=result.processed_files,
+                failed_files=result.failed_files if result.failed_files else None,
+                results=results_dict,
+            )
+            await session.commit()
+
+            log.info(
+                "background_scan_completed",
+                archivos=result.processed_files,
+                clases=results_dict["escaneo"]["clases_total"],
+                funciones=results_dict["escaneo"]["funciones_total"],
+                score=result.score_general,
+                riesgo=result.nivel_riesgo,
+            )
+            
+        except Exception as e:
+            log.error("background_scan_failed", error=str(e))
+            # Fallback update to FAILED if possible
+            try:
+                await repository.update_scan_job_status(
+                    session,
+                    job_id,
+                    status="FAILED",
+                    failed_files=[{"archivo": "ALL", "error": str(e)}]
+                )
+                await session.commit()
+            except Exception as e_inner:
+                log.error("background_scan_failed_to_update_status", error=str(e_inner))
+
+
 @router.post(
     "",
-    summary="Run a code scan",
-    description="Analyzes the specified repository and returns full results immediately.",
+    response_model=ScanAcceptedResponse,
+    status_code=202,
+    summary="Queue a code scan",
+    description="Queues the specified repository analysis as a background task and returns a job ID.",
 )
 async def run_scan(
     request: ScanRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    """Run a complete code analysis scan and return results directly."""
-    from src.core.analyzers.pipeline import run as run_pipeline
-
+    """Queue a code analysis scan."""
     log = logger.bind(
         microservice=request.microservice_name,
         project_path=request.project_path,
     )
 
-    # Validate project_path exists
+    # Validate project_path exists locally
     if not request.repo_url and not os.path.isdir(request.project_path):
         raise HTTPException(
             status_code=400,
             detail=f"project_path does not exist or is not a directory: {request.project_path}",
         )
 
-    log.info("scan_started")
-
-    # Run pipeline synchronously — returns full results
-    result = await run_pipeline(
-        project_path=request.project_path,
-        activo_id=request.activo_id,
-        aplicacion_id=request.aplicacion_id,
-        microservice_name=request.microservice_name,
-        aone_client=None,
-    )
-
-    # Build response
-    results_dict = _build_results(result)
-
-    # Store in DB for future reference
+    # Store initially as QUEUED in DB
     job = await repository.create_scan_job(
         session,
         activo_id=request.activo_id,
@@ -177,34 +230,18 @@ async def run_scan(
         project_path=request.project_path,
         branch=request.branch,
     )
-    await session.flush()
+    # The current transaction must commit to make the job ID available for the background task
+    await session.commit()
+    
+    # Add to FastAPI background tasks
+    background_tasks.add_task(_run_scan_background_task, job.id, request)
+    
+    log.info("scan_queued", job_id=str(job.id))
 
-    await repository.update_scan_job_status(
-        session,
-        job.id,
-        status="COMPLETED",
-        total_files=result.total_files,
-        processed_files=result.processed_files,
-        failed_files=result.failed_files if result.failed_files else None,
-        results=results_dict,
-    )
-
-    log.info(
-        "scan_completed",
+    return ScanAcceptedResponse(
         job_id=str(job.id),
-        archivos=result.processed_files,
-        clases=results_dict["escaneo"]["clases_total"],
-        funciones=results_dict["escaneo"]["funciones_total"],
-        score=result.score_general,
-        riesgo=result.nivel_riesgo,
+        status="QUEUED"
     )
-
-    return {
-        "job_id": str(job.id),
-        "status": "COMPLETED",
-        "microservice_name": request.microservice_name,
-        "results": results_dict,
-    }
 
 
 @router.get(

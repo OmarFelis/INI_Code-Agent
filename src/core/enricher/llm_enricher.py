@@ -26,12 +26,17 @@ Analiza la siguiente función concreta de este componente ({nombre_funcion}):
 {codigo_original}
 </codigo_funcion>
 
-INSTRUCCIONES: Extrae reglas de negocio (condicionales) y un resumen funcional estructurado.
+INSTRUCCIONES: Extrae reglas de negocio (condicionales) y un resumen funcional estructurado. Para cada regla, incluye la explicación y el fragmento de código (snippet) exacto que evalúa la condición.
 Devuelve EXACTAMENTE este formato JSON purista sin bloques de markdown:
 {{
   "resumen_funcional": "string en español",
   "modifica_estado": boolean,
-  "reglas_de_negocio": ["regla 1", "regla 2"]
+  "reglas_de_negocio": [
+    {{
+      "descripcion": "explicación de la regla de negocio",
+      "codigo_relacionado": "if (edad < 18) {{ throw Error... }}"
+    }}
+  ]
 }}
 """
 
