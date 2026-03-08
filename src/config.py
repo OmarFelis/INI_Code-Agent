@@ -73,6 +73,26 @@ class Settings(BaseSettings):
         description="Max neighbor files to include in LLM context",
     )
 
+    # --- LLM Cache ---
+    enable_llm_cache: bool = Field(
+        default=True,
+        description="Enable SQLite-backed cache for LLM responses",
+    )
+    llm_cache_ttl_days: int = Field(
+        default=30,
+        description="Time-to-live for cached LLM responses in days",
+    )
+
+    # --- Semgrep Security ---
+    enable_semgrep_scan: bool = Field(
+        default=False,
+        description="Enable Semgrep OWASP security scanning (requires semgrep CLI)",
+    )
+    semgrep_timeout_seconds: int = Field(
+        default=120,
+        description="Timeout for Semgrep subprocess execution",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

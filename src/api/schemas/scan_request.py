@@ -11,7 +11,7 @@ class ScanRequest(BaseModel):
     project_path: str = Field(
         ...,
         description="Ruta local al repositorio del microservicio",
-        examples=["C:/repos/acs-service"],
+        examples=["C:/payment-service-charges"],
     )
     branch: str = Field(
         default="main",

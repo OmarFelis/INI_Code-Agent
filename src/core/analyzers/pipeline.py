@@ -43,6 +43,7 @@ class PipelineResult:
         self.score_general: float = 0.0
         self.nivel_riesgo: str = "LOW"
         self.project_context: ProjectContext | None = None
+        self.semgrep_report = None  # SemgrepReport (optional)
 
 
 async def run(
@@ -121,6 +122,21 @@ async def run(
         log.info(
             "pipeline_context_builder_done",
             modules=len(project_context.manifest.modules),
+        )
+
+    # ── 4b. SECURITY SCAN: Semgrep OWASP (optional) ──────────────
+    if settings.enable_semgrep_scan:
+        from src.core.security.semgrep_runner import SemgrepRunner
+
+        log.info("pipeline_semgrep_start")
+        runner = SemgrepRunner(timeout_seconds=settings.semgrep_timeout_seconds)
+        semgrep_report = await runner.scan(project_path)
+        result.semgrep_report = semgrep_report
+        log.info(
+            "pipeline_semgrep_done",
+            findings=semgrep_report.total_findings,
+            available=semgrep_report.semgrep_available,
+            duration_ms=semgrep_report.scan_duration_ms,
         )
 
     # ── 5. Persist archivos + unidades to A-ONE ───────────────────

@@ -14,6 +14,20 @@ except ImportError:
 
 logger = structlog.get_logger()
 
+# Lazy-initialized LLM cache singleton
+_llm_cache = None
+
+def _get_cache():
+    """Lazy init to avoid import-time side effects."""
+    global _llm_cache
+    if _llm_cache is None:
+        from src.config import settings
+        from src.core.enricher.llm_cache import LLMCache
+        _llm_cache = LLMCache(
+            ttl_days=settings.llm_cache_ttl_days,
+        )
+    return _llm_cache
+
 # Configuración AWS Bedrock
 REGION = "us-east-1"
 # Modelo recomendado para costos bajos y velocidad
@@ -145,7 +159,17 @@ async def bedrock_llm_call(prompt: str, function_name: str, max_tokens: int = 10
     """
     Ejecuta una llamada asíncrona a Claude en AWS Bedrock
     usando asyncio.to_thread para no bloquear el Worker de FastAPI.
+    Includes transparent caching when enabled.
     """
+    # ── Cache check ───────────────────────────────────────────────
+    from src.config import settings
+    if settings.enable_llm_cache:
+        cache = _get_cache()
+        cached = cache.get(prompt)
+        if cached:
+            logger.debug("llm_cache_hit", function=function_name)
+            return cached
+
     def _invoke():
         client = get_bedrock_client()
         payload = {
@@ -172,7 +196,14 @@ async def bedrock_llm_call(prompt: str, function_name: str, max_tokens: int = 10
         return _safe_parse_json(response_text, function_name)
 
     try:
-        return await asyncio.to_thread(_invoke)
+        result = await asyncio.to_thread(_invoke)
+
+        # ── Cache store ───────────────────────────────────────────
+        if settings.enable_llm_cache:
+            cache = _get_cache()
+            cache.put(prompt, result)
+
+        return result
     except Exception as e:
         logger.error("bedrock_call_failed", function=function_name, error=str(e))
         return {

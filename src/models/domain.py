@@ -215,3 +215,30 @@ class ProjectContext(BaseModel):
 
     manifest: ProjectManifest
     file_contexts: dict[str, FileContext] = Field(default_factory=dict)  # keyed by file_path
+
+
+# ============================================
+# Security Models (Semgrep)
+# ============================================
+
+class SemgrepFinding(BaseModel):
+    """A single security finding from Semgrep."""
+
+    rule_id: str
+    severity: str                          # ERROR | WARNING | INFO
+    message: str
+    file_path: str
+    line_start: int = 0
+    line_end: int = 0
+    code_snippet: str = ""
+    owasp_category: str | None = None      # "A03:Injection"
+
+
+class SemgrepReport(BaseModel):
+    """Aggregated Semgrep scan results."""
+
+    total_findings: int = 0
+    findings: list[SemgrepFinding] = Field(default_factory=list)
+    scan_duration_ms: int = 0
+    semgrep_available: bool = True
+
