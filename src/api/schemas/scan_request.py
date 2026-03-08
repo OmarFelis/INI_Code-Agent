@@ -46,3 +46,14 @@ class EnrichmentRequest(BaseModel):
         ..., 
         description="Lista de funciones seleccionadas del escaneo previo para enviar al LLM"
     )
+
+
+class BatchScanRequest(BaseModel):
+    """POST /api/v1/scan/batch request body."""
+
+    scans: list[ScanRequest] = Field(
+        ...,
+        description="Lista de scan requests a ejecutar en batch",
+        min_length=1,
+    )
+

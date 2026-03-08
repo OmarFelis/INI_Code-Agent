@@ -93,6 +93,16 @@ class Settings(BaseSettings):
         description="Timeout for Semgrep subprocess execution",
     )
 
+    # --- Repos Cache ---
+    repos_cache_dir: str = Field(
+        default="repos_cache",
+        description="Directory to cache cloned repositories for enrichment",
+    )
+    repos_cache_ttl_days: int = Field(
+        default=7,
+        description="Auto-cleanup cloned repos older than N days",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

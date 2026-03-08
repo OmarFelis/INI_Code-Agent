@@ -11,8 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.db.session import init_db, close_db
 from src.logging_config import setup_logging
-from src.api.routes import scan, health, ai
-
+from src.api.routes import scan, health, ai, scan_batch
 
 # --- Setup logging before anything else ---
 setup_logging(settings.log_level)
@@ -69,6 +68,7 @@ app.add_middleware(
 # --- Routes ---
 app.include_router(health.router)
 app.include_router(scan.router)
+app.include_router(scan_batch.router)
 app.include_router(ai.router)
 
 

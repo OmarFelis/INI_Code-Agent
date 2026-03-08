@@ -190,6 +190,17 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             # Build response
             results_dict = _build_results(result)
 
+            # If repo was cloned, move to repos_cache instead of deleting
+            final_project_path = project_path_to_scan
+            if temp_repo_path and os.path.exists(temp_repo_path):
+                import shutil
+                cache_dir = os.path.abspath(f"{settings.repos_cache_dir}/{job_id}")
+                os.makedirs(os.path.dirname(cache_dir), exist_ok=True)
+                shutil.move(temp_repo_path, cache_dir)
+                final_project_path = cache_dir
+                temp_repo_path = None  # Prevent cleanup in finally
+                log.info("repo_moved_to_cache", cache_path=cache_dir)
+
             # Update DB to COMPLETED
             await repository.update_scan_job_status(
                 session,
@@ -199,6 +210,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 processed_files=result.processed_files,
                 failed_files=result.failed_files if result.failed_files else None,
                 results=results_dict,
+                project_path=final_project_path,
             )
             await session.commit()
 
@@ -225,7 +237,8 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             except Exception as e_inner:
                 log.error("background_scan_failed_to_update_status", error=str(e_inner))
         finally:
-            if temp_repo_path:
+            # Only cleanup if move to cache failed
+            if temp_repo_path and os.path.exists(temp_repo_path):
                 log.info("cleaning_up_temporary_repository", temp_repo_path=temp_repo_path)
                 cleanup_repository(temp_repo_path)
 

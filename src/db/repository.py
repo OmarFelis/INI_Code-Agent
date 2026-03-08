@@ -19,6 +19,7 @@ async def create_scan_job(
     microservice_name: str | None = None,
     project_path: str | None = None,
     branch: str | None = None,
+    batch_id: str | None = None,
 ) -> ScanJobORM:
     """Create a new scan job with status QUEUED."""
     job = ScanJobORM(
@@ -27,6 +28,7 @@ async def create_scan_job(
         microservice_name=microservice_name,
         project_path=project_path,
         branch=branch,
+        batch_id=batch_id,
         status="QUEUED",
     )
     session.add(job)
@@ -53,6 +55,7 @@ async def update_scan_job_status(
     scan_id: str | None = None,
     error_message: str | None = None,
     results: dict | None = None,
+    project_path: str | None = None,
 ) -> None:
     """Update scan job status and progress fields."""
     values: dict = {"status": status}
@@ -74,6 +77,8 @@ async def update_scan_job_status(
         values["error_message"] = error_message
     if results is not None:
         values["results"] = results
+    if project_path is not None:
+        values["project_path"] = project_path
 
     await session.execute(
         update(ScanJobORM).where(ScanJobORM.id == job_id).values(**values)
@@ -92,3 +97,17 @@ async def list_scan_jobs(
         query = query.where(ScanJobORM.activo_id == activo_id)
     result = await session.execute(query)
     return list(result.scalars().all())
+
+
+async def list_batch_jobs(
+    session: AsyncSession,
+    batch_id: str,
+) -> list[ScanJobORM]:
+    """List all scan jobs belonging to a batch."""
+    result = await session.execute(
+        select(ScanJobORM)
+        .where(ScanJobORM.batch_id == batch_id)
+        .order_by(ScanJobORM.created_at.asc())
+    )
+    return list(result.scalars().all())
+

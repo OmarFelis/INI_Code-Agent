@@ -38,6 +38,7 @@ docker-compose.override.yml
 
 # Repos clonados temporales
 tmp_repos/
+repos_cache/
 
 # Local databases
 codeagent.db

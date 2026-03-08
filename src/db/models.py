@@ -31,6 +31,7 @@ class ScanJobORM(Base):
     processed_files: Mapped[int] = mapped_column(Integer, default=0)
     failed_files: Mapped[dict | None] = mapped_column(JSON, default=list)
     scan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- Full results (stored as JSON when pipeline completes) ---
