@@ -55,6 +55,24 @@ class Settings(BaseSettings):
         description="App Password / Access Token for Git cloning",
     )
 
+    # --- Pipeline V2 ---
+    parallel_workers_ast: int = Field(
+        default=10,
+        description="Max concurrent workers for AST extraction (Pass 1)",
+    )
+    parallel_workers_llm: int = Field(
+        default=5,
+        description="Max concurrent workers for LLM enrichment (Pass 2)",
+    )
+    enable_context_enrichment: bool = Field(
+        default=True,
+        description="Enable context-aware LLM prompts with dependency graph",
+    )
+    context_max_neighbors: int = Field(
+        default=5,
+        description="Max neighbor files to include in LLM context",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

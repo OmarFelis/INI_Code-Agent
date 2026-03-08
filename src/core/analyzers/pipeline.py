@@ -1,10 +1,10 @@
 """
-Code-Agent — Pipeline Orchestrator.
-Coordinates the full scan flow:
-  1. Analyze project files
-  2. Extract logical units with scoring
-  3. Persist to A-ONE via HTTP
-  4. Create scan summary (escaneo)
+Code-Agent — Pipeline Orchestrator V2.
+Coordinates the full scan flow with parallel workers and context-aware analysis:
+  Pass 1.  Parallel AST extraction  (worker_pool)
+  Bridge.  Build dependency graph    (context_builder)
+  Pass 2.  LLM enrichment w/ context (worker_pool + llm_enricher)  — opt-in
+  Final.   Aggregation + persistence
 """
 
 import json
@@ -14,13 +14,16 @@ from pathlib import Path
 
 import structlog
 
+from src.config import settings
+from src.core.analyzers.context_builder import ContextBuilder
 from src.core.analyzers.project_analyzer import ProjectAnalyzerService
-from src.core.analyzers import logical_unit_extractor
+from src.core.analyzers import logical_unit_extractor, worker_pool
 from src.integrations.aone_client import AOneClient
 from src.models.domain import (
     ArchivoFuente,
     UnidadLogica,
     Escaneo,
+    ProjectContext,
     RiskLevel,
 )
 
@@ -39,6 +42,7 @@ class PipelineResult:
         self.scan_id: str | None = None
         self.score_general: float = 0.0
         self.nivel_riesgo: str = "LOW"
+        self.project_context: ProjectContext | None = None
 
 
 async def run(
@@ -50,7 +54,7 @@ async def run(
     on_file_processed: callable = None,
 ) -> PipelineResult:
     """
-    Execute the full scan pipeline.
+    Execute the full scan pipeline (V2 — parallel + context-aware).
 
     Args:
         project_path: Local path to the repository.
@@ -61,12 +65,12 @@ async def run(
         on_file_processed: Optional callback(processed, total, file_name) for progress.
 
     Returns:
-        PipelineResult with all extracted data.
+        PipelineResult with all extracted data and project context.
     """
     log = logger.bind(microservice=microservice_name, path=project_path)
     result = PipelineResult()
 
-    # ── 1. Analyze project ────────────────────────────────────
+    # ── 1. Analyze project (file discovery + AST parsing) ─────────
     log.info("pipeline_phase1_analyze_start")
     analyzer_service = ProjectAnalyzerService()
     project = analyzer_service.analyze_project(project_path, microservice_name)
@@ -74,88 +78,97 @@ async def run(
 
     log.info("pipeline_phase1_analyze_done", files=project.total_files, lines=project.total_lines)
 
-    # ── 2. Get commit hash ────────────────────────────────────
+    # ── 2. Get commit hash ────────────────────────────────────────
     commit_hash = _get_commit_hash(project_path)
 
-    # ── 3. Process each file ──────────────────────────────────
+    # ── 3. PASS 1: Parallel extraction ────────────────────────────
+    log.info(
+        "pipeline_pass1_parallel_start",
+        workers=settings.parallel_workers_ast,
+    )
+
+    archivos, unidades, failed_files = await worker_pool.run_parallel_extraction(
+        files=project.files,
+        project_path=project_path,
+        activo_id=activo_id,
+        aplicacion_id=aplicacion_id,
+        max_workers=settings.parallel_workers_ast,
+        on_progress=on_file_processed,
+    )
+
+    # Set commit hash and timestamp on all archivos
+    for archivo in archivos:
+        archivo.commit_hash = commit_hash
+        archivo.escaneado_en = datetime.now(timezone.utc).isoformat()
+
+    result.archivos = archivos
+    result.unidades = unidades
+    result.processed_files = len(archivos)
+    result.failed_files = failed_files
+
+    log.info(
+        "pipeline_pass1_parallel_done",
+        processed=len(archivos),
+        failed=len(failed_files),
+    )
+
+    # ── 4. CONTEXT BUILDER: dependency graph ──────────────────────
+    if settings.enable_context_enrichment:
+        log.info("pipeline_context_builder_start")
+        builder = ContextBuilder()
+        project_context = builder.build(project, archivos, unidades)
+        result.project_context = project_context
+        log.info(
+            "pipeline_context_builder_done",
+            modules=len(project_context.manifest.modules),
+        )
+
+    # ── 5. Persist archivos + unidades to A-ONE ───────────────────
+    if aone_client:
+        for archivo in archivos:
+            try:
+                resp = await aone_client.post_archivo_fuente(archivo)
+                archivo_id = resp.get("id") or resp.get("data", {}).get("id")
+                log.debug("archivo_persisted", nombre=archivo.nombre, id=archivo_id)
+
+                # Update unidades with the real archivo_id
+                for unidad in unidades:
+                    if unidad.archivo_id == archivo.id and archivo_id:
+                        unidad.archivo_id = archivo_id
+
+                    if archivo_id:
+                        try:
+                            await aone_client.post_unidad_logica(unidad)
+                        except Exception as e:
+                            log.warning("unidad_persist_failed", nombre=unidad.nombre, error=str(e))
+
+            except Exception as e:
+                log.warning("archivo_persist_failed", nombre=archivo.nombre, error=str(e))
+
+    # ── 6. Collect scores and build escaneo ───────────────────────
     all_scores: list[float] = []
     all_complexities: list[int] = []
 
-    for idx, file_analysis in enumerate(project.files):
-        file_abs_path = str(Path(project_path) / file_analysis.file_path)
-        try:
-            # Extract hierarchy
-            archivo, unidades = logical_unit_extractor.extract(
-                file_analysis=file_analysis,
-                file_path_absolute=file_abs_path,
-                activo_id=activo_id,
-                aplicacion_id=aplicacion_id,
-            )
+    for u in unidades:
+        if u.metadata:
+            meta = json.loads(u.metadata)
+            if meta.get("overall_score"):
+                all_scores.append(meta["overall_score"])
+        if u.complejidad:
+            all_complexities.append(u.complejidad)
 
-            # Set commit hash and timestamp
-            archivo.commit_hash = commit_hash
-            archivo.escaneado_en = datetime.now(timezone.utc).isoformat()
-
-            # Persist archivo_fuente to A-ONE
-            archivo_id = None
-            if aone_client:
-                try:
-                    resp = await aone_client.post_archivo_fuente(archivo)
-                    archivo_id = resp.get("id") or resp.get("data", {}).get("id")
-                    log.debug("archivo_persisted", nombre=archivo.nombre, id=archivo_id)
-                except Exception as e:
-                    log.warning("archivo_persist_failed", nombre=archivo.nombre, error=str(e))
-
-            # Set archivo_id on all unidades and persist
-            for unidad in unidades:
-                if archivo_id:
-                    unidad.archivo_id = archivo_id
-
-                if aone_client and archivo_id:
-                    try:
-                        # Replace temp parent_ids with real IDs
-                        # (For now, parent_id is a temp placeholder — will be resolved below)
-                        await aone_client.post_unidad_logica(unidad)
-                    except Exception as e:
-                        log.warning("unidad_persist_failed", nombre=unidad.nombre, error=str(e))
-
-            # Collect scores
-            for u in unidades:
-                if u.metadata:
-                    meta = json.loads(u.metadata)
-                    if meta.get("overall_score"):
-                        all_scores.append(meta["overall_score"])
-                if u.complejidad:
-                    all_complexities.append(u.complejidad)
-
-            result.archivos.append(archivo)
-            result.unidades.extend(unidades)
-            result.processed_files += 1
-
-            # Progress callback
-            if on_file_processed:
-                on_file_processed(result.processed_files, result.total_files, archivo.nombre)
-
-        except Exception as e:
-            log.error("file_processing_failed", file=file_analysis.file_name, error=str(e))
-            result.failed_files.append({
-                "archivo": file_analysis.file_name,
-                "error": str(e),
-            })
-
-    # ── 4. Build and persist escaneo ──────────────────────────
     avg_score = round(sum(all_scores) / len(all_scores), 2) if all_scores else 0.0
     max_complexity = max(all_complexities) if all_complexities else 0
 
     # Count by type
-    clases_total = sum(1 for u in result.unidades if u.tipo == "CLASE")
-    funciones_total = sum(1 for u in result.unidades if u.tipo == "FUNCION")
+    clases_total = sum(1 for u in unidades if u.tipo == "CLASE")
+    funciones_total = sum(1 for u in unidades if u.tipo == "FUNCION")
 
     # Count by layer
     layer_counts = {"Dominio": 0, "Infraestructura": 0, "Adaptador": 0}
     risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
 
-    for u in result.unidades:
+    for u in unidades:
         if u.metadata:
             meta = json.loads(u.metadata)
             layer = meta.get("capa", "")
@@ -178,7 +191,7 @@ async def run(
         aplicacion_id=aplicacion_id,
         commit_hash=commit_hash,
         escaneado_en=datetime.now(timezone.utc).isoformat(),
-        generado_por="code-agent-v1.0",
+        generado_por="code-agent-v2.0",
         score_general=avg_score,
         nivel_riesgo=nivel_riesgo,
         archivos_total=result.processed_files,
@@ -193,13 +206,13 @@ async def run(
         }),
         arquitectura=json.dumps({
             "capas": layer_counts,
-            "multi_layer_count": sum(1 for u in result.unidades
+            "multi_layer_count": sum(1 for u in unidades
                                      if u.metadata and json.loads(u.metadata).get("compliance", {}).get("has_multi_layer_coupling")),
         }),
         cumplimiento=json.dumps({
             "risk_distribution": risk_counts,
-            "loc_ok_pct": round(sum(1 for u in result.unidades if u.metadata and json.loads(u.metadata).get("compliance", {}).get("loc_ok")) / max(len(result.unidades), 1) * 100, 1),
-            "complexity_ok_pct": round(sum(1 for u in result.unidades if u.metadata and json.loads(u.metadata).get("compliance", {}).get("complexity_ok")) / max(len(result.unidades), 1) * 100, 1),
+            "loc_ok_pct": round(sum(1 for u in unidades if u.metadata and json.loads(u.metadata).get("compliance", {}).get("loc_ok")) / max(len(unidades), 1) * 100, 1),
+            "complexity_ok_pct": round(sum(1 for u in unidades if u.metadata and json.loads(u.metadata).get("compliance", {}).get("complexity_ok")) / max(len(unidades), 1) * 100, 1),
         }),
     )
 
@@ -217,12 +230,14 @@ async def run(
 
     log.info(
         "pipeline_completed",
+        version="v2",
         archivos=result.processed_files,
         clases=clases_total,
         funciones=funciones_total,
         score=avg_score,
         riesgo=nivel_riesgo,
         failed=len(result.failed_files),
+        context_built=result.project_context is not None,
     )
 
     return result

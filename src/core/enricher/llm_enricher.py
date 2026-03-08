@@ -217,3 +217,106 @@ async def analyze_files_batch(archivos: List[Dict], max_concurrent: int = 3) -> 
         resultados_finales.append(enriched)
 
     return resultados_finales
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Pipeline V2 — Context-Enriched Prompts
+# ══════════════════════════════════════════════════════════════════════
+
+PROMPT_ARCHIVO_CON_CONTEXTO = """
+Eres un Arquitecto de Software Experto. Tu tarea es analizar un archivo de código fuente con conocimiento del contexto arquitectónico del proyecto al que pertenece.
+
+<contexto_proyecto>
+{contexto_proyecto}
+</contexto_proyecto>
+
+Archivo: {nombre_archivo}
+Lenguaje: {lenguaje}
+Capa detectada: {capa}
+
+<codigo_completo>
+{codigo_completo}
+</codigo_completo>
+
+INSTRUCCIONES: Usando el contexto del proyecto (arquitectura, dependencias, módulo), analiza el archivo y devuelve EXACTAMENTE este formato JSON purista sin bloques de markdown:
+{{
+  "resumen_archivo": "descripción concisa en español del propósito general del archivo, considerando su rol dentro del módulo y la arquitectura",
+  "responsabilidad_principal": "string corto: ej. Controlador REST, Servicio de negocio, Repositorio de datos, Modelo de dominio, Configuración, Utilidad",
+  "dependencias_clave": ["lista de imports/dependencias críticas del archivo"],
+  "patrones_detectados": ["ej. Singleton, Repository, Factory, Observer"],
+  "relacion_con_vecinos": "descripción breve de cómo este archivo se relaciona con los archivos de los que depende y los que lo usan",
+  "endpoints_expuestos": [
+    {{
+      "metodo": "GET/POST/PUT/DELETE",
+      "ruta": "/api/ejemplo",
+      "descripcion": "breve descripción"
+    }}
+  ],
+  "observaciones": ["notas relevantes sobre calidad, seguridad o mejoras, considerando el contexto arquitectónico"]
+}}
+"""
+
+
+async def analyze_files_batch_with_context(
+    archivos: List[Dict],
+    max_concurrent: int = 5,
+) -> List[Dict]:
+    """
+    Enrichment with context — V2 of analyze_files_batch.
+
+    Each dict in ``archivos`` should include a ``contexto_proyecto`` key
+    with the human-readable context block built by worker_pool._build_context_block.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _limited_call(prompt, name):
+        async with semaphore:
+            return await bedrock_llm_call(prompt, name)
+
+    tareas = []
+
+    for archivo in archivos:
+        # Use context-enriched prompt if context is available
+        contexto = archivo.get("contexto_proyecto", "")
+        if contexto:
+            prompt = PROMPT_ARCHIVO_CON_CONTEXTO.format(
+                nombre_archivo=archivo.get("nombre_archivo"),
+                lenguaje=archivo.get("lenguaje", "Desconocido"),
+                capa=archivo.get("capa", "Sin clasificar"),
+                codigo_completo=archivo.get("codigo_completo", "Sin código"),
+                contexto_proyecto=contexto,
+            )
+        else:
+            # Fallback to the original prompt without context
+            prompt = PROMPT_ARCHIVO.format(
+                nombre_archivo=archivo.get("nombre_archivo"),
+                lenguaje=archivo.get("lenguaje", "Desconocido"),
+                capa=archivo.get("capa", "Sin clasificar"),
+                codigo_completo=archivo.get("codigo_completo", "Sin código"),
+            )
+        tareas.append(_limited_call(prompt, archivo.get("nombre_archivo")))
+
+    logger.info("llm_files_context_batch_started", size=len(tareas))
+    resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
+    logger.info("llm_files_context_batch_completed")
+
+    resultados_finales = []
+
+    for idx, archivo in enumerate(archivos):
+        res_ia = resultados_ia[idx]
+
+        enriched = {
+            "nombre_archivo": archivo.get("nombre_archivo"),
+            "ruta_archivo": archivo.get("ruta_archivo"),
+            "analisis_ia": {},
+        }
+
+        if isinstance(res_ia, Exception):
+            enriched["analisis_ia"] = {"error": str(res_ia)}
+        else:
+            enriched["analisis_ia"] = res_ia
+
+        resultados_finales.append(enriched)
+
+    return resultados_finales
+

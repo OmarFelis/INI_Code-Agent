@@ -6,3 +6,16 @@
 
 #Comando para ejecutar el servidor de IA
 .\.venv\Scripts\uvicorn.exe src.api.main:app --reload --port 8001
+
+
+#Comandos para levantar el proyecto
+python -m venv .venv
+
+.\.venv\Scripts\activate
+
+pip install -e .
+
+
+#Levantar base de datos
+docker compose up -d db
+

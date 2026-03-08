@@ -180,3 +180,38 @@ class UnitMetadata(BaseModel):
     parameters: list[str] = Field(default_factory=list)
     return_type: str | None = None
     reglas_negocio: list[str] = Field(default_factory=list)
+
+
+# ============================================
+# Context Models (Pipeline V2)
+# ============================================
+
+class FileContext(BaseModel):
+    """Context information for a single file, built from the dependency graph."""
+
+    file_path: str
+    file_name: str
+    module: str = ""                                      # Package/directory grouping
+    layer: str | None = None                              # Dominio, Infraestructura, Adaptador
+    imports_from: list[str] = Field(default_factory=list)  # Files this file depends on
+    imported_by: list[str] = Field(default_factory=list)   # Files that depend on this file
+    sibling_files: list[str] = Field(default_factory=list) # Other files in the same module
+    module_purpose: str = ""                               # Inferred purpose of the module
+
+
+class ProjectManifest(BaseModel):
+    """High-level architecture summary of the entire project."""
+
+    project_name: str
+    total_files: int = 0
+    total_lines: int = 0
+    layers: dict[str, int] = Field(default_factory=dict)       # {"Dominio": 45, ...}
+    languages: dict[str, int] = Field(default_factory=dict)    # {"Java": 65, ...}
+    modules: list[str] = Field(default_factory=list)            # ["cards", "auth", ...]
+
+
+class ProjectContext(BaseModel):
+    """Full project context built by the ContextBuilder after Pass 1."""
+
+    manifest: ProjectManifest
+    file_contexts: dict[str, FileContext] = Field(default_factory=dict)  # keyed by file_path
