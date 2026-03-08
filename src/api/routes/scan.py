@@ -26,6 +26,17 @@ from src.api.schemas.scan_response import (
 from src.db.session import get_session, async_session_factory
 from src.db import repository
 from src.core.enricher import llm_enricher
+from src.core.analyzers.context_builder import ContextBuilder
+from src.core.analyzers.worker_pool import _build_context_block
+from src.config import settings
+from src.models.domain import (
+    ArchivoFuente,
+    ProjectAnalysis,
+    FileAnalysis,
+    LanguageType,
+    ProjectManifest,
+    UnidadLogica,
+)
 
 logger = structlog.get_logger()
 
@@ -451,7 +462,7 @@ async def enrich_scan_job(
 # ── Enrich-All (todas las funciones) ─────────────────────────────
 
 async def _run_enrich_all_background_task(job_id: UUID):
-    """Background task to enrich ALL functions of a scan."""
+    """Background task to enrich ALL functions of a scan (with context)."""
     log = logger.bind(job_id=str(job_id), task="ai_enrich_all")
     
     try:
@@ -464,6 +475,15 @@ async def _run_enrich_all_background_task(job_id: UUID):
             project_path = job.project_path
             archivos_fuente = job.results.get("archivos_fuente", [])
             mapa_archivos = {a.get("nombre"): a.get("ruta_archivo") for a in archivos_fuente}
+            
+            # ── Build ProjectContext for richer prompts ────────────
+            project_context = None
+            if settings.enable_context_enrichment:
+                project_context = _rebuild_project_context(
+                    job.microservice_name or "unknown",
+                    archivos_fuente,
+                )
+                log.info("enrich_all_context_built", modules=len(project_context.manifest.modules))
             
             unidades = job.results.get("unidades_logicas", [])
             payload_funciones = []
@@ -487,9 +507,21 @@ async def _run_enrich_all_background_task(job_id: UUID):
                         fin = unit.get("linea_fin", len(lines))
                         codigo_original = "".join(lines[inicio:fin])
                         
+                        # Build context block for this function's file
+                        context_block = ""
+                        if project_context:
+                            file_ctx = project_context.file_contexts.get(ruta_relativa)
+                            context_block = _build_context_block(
+                                project_context.manifest, file_ctx
+                            )
+                        
+                        esquema_clase = unit.get("parent") or "Standalone"
+                        if context_block:
+                            esquema_clase = f"{context_block}\n\nClase/Componente: {esquema_clase}"
+                        
                         payload_funciones.append({
                             "nombre_funcion": unit.get("nombre"),
-                            "componente": unit.get("parent") or "Standalone",
+                            "componente": esquema_clase,
                             "archivo": ruta_relativa,
                             "lineas": f"{inicio+1}-{fin}",
                             "codigo_original": codigo_original
@@ -555,7 +587,7 @@ async def enrich_all_functions(
 # ── Enrich-Files (todos los archivos) ────────────────────────────
 
 async def _run_enrich_files_background_task(job_id: UUID):
-    """Background task to enrich ALL files of a scan with file-level AI analysis."""
+    """Background task to enrich ALL files of a scan with file-level AI analysis (context-aware)."""
     log = logger.bind(job_id=str(job_id), task="ai_enrich_files")
     
     try:
@@ -567,6 +599,16 @@ async def _run_enrich_files_background_task(job_id: UUID):
             
             project_path = job.project_path
             archivos_fuente = job.results.get("archivos_fuente", [])
+
+            # ── Build ProjectContext for richer prompts ────────────
+            project_context = None
+            if settings.enable_context_enrichment:
+                project_context = _rebuild_project_context(
+                    job.microservice_name or "unknown",
+                    archivos_fuente,
+                )
+                log.info("enrich_files_context_built", modules=len(project_context.manifest.modules))
+
             payload_archivos = []
             
             for archivo in archivos_fuente:
@@ -583,12 +625,21 @@ async def _run_enrich_files_background_task(job_id: UUID):
                     with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
                         codigo_completo = file_source.read()
                         
+                        # Build context block for this file
+                        context_block = ""
+                        if project_context:
+                            file_ctx = project_context.file_contexts.get(ruta_relativa)
+                            context_block = _build_context_block(
+                                project_context.manifest, file_ctx
+                            )
+                        
                         payload_archivos.append({
                             "nombre_archivo": archivo.get("nombre"),
                             "ruta_archivo": ruta_relativa,
                             "lenguaje": archivo.get("lenguaje", "Desconocido"),
                             "capa": archivo.get("capa", "Sin clasificar"),
-                            "codigo_completo": codigo_completo
+                            "codigo_completo": codigo_completo,
+                            "contexto_proyecto": context_block,
                         })
                 except Exception as e:
                     log.warning("enrich_files_read_error", file=archivo_absoluto, error=str(e))
@@ -598,8 +649,14 @@ async def _run_enrich_files_background_task(job_id: UUID):
                 log.warning("enrich_files_no_files_to_enrich")
                 return
                 
-            log.info("enrich_files_calling_bedrock", files=len(payload_archivos))
-            resultados_ia = await llm_enricher.analyze_files_batch(payload_archivos)
+            # Use context-aware enricher if context is available
+            has_context = any(p.get("contexto_proyecto") for p in payload_archivos)
+            if has_context:
+                log.info("enrich_files_calling_bedrock_with_context", files=len(payload_archivos))
+                resultados_ia = await llm_enricher.analyze_files_batch_with_context(payload_archivos)
+            else:
+                log.info("enrich_files_calling_bedrock", files=len(payload_archivos))
+                resultados_ia = await llm_enricher.analyze_files_batch(payload_archivos)
             
             ia_lookup = {r.get("nombre_archivo"): r.get("analisis_ia") for r in resultados_ia}
             
@@ -645,4 +702,64 @@ async def enrich_all_files(
     
     total_files = len((job.results or {}).get("archivos_fuente", []))
     return {"message": f"Enrich-files queued for {total_files} files", "job_id": job_id}
+
+
+# ── Helper: Rebuild ProjectContext from stored scan results ──────
+
+def _rebuild_project_context(microservice_name: str, archivos_fuente: list[dict]):
+    """
+    Rebuild a lightweight ProjectContext from the stored scan results.
+    This allows the enrich endpoints to inject context without re-running
+    the full pipeline.
+    """
+    from src.models.domain import ProjectContext, ProjectManifest, FileContext
+    from pathlib import PurePosixPath
+    from collections import defaultdict
+
+    # Build fake FileAnalysis list for the ContextBuilder
+    fake_files = []
+    for a in archivos_fuente:
+        ruta = a.get("ruta_archivo", a.get("nombre", ""))
+        lang_str = a.get("lenguaje", "Python")
+        try:
+            lang = LanguageType(lang_str)
+        except ValueError:
+            lang = LanguageType.PYTHON
+
+        fa = FileAnalysis(
+            file_path=ruta,
+            file_name=a.get("nombre", ""),
+            language=lang,
+            total_lines=a.get("lineas_codigo", 0),
+            imports=a.get("imports", []),
+        )
+        fake_files.append(fa)
+
+    fake_archivos = []
+    for a in archivos_fuente:
+        fake_archivos.append(ArchivoFuente(
+            activo_id="rebuild",
+            aplicacion_id="rebuild",
+            nombre=a.get("nombre", ""),
+            ruta_archivo=a.get("ruta_archivo"),
+            capa=a.get("capa"),
+            lenguaje=a.get("lenguaje"),
+        ))
+
+    project_analysis = ProjectAnalysis(
+        project_name=microservice_name,
+        project_path="",
+        files=fake_files,
+        total_files=len(fake_files),
+        total_lines=sum(a.get("lineas_codigo", 0) for a in archivos_fuente),
+        languages={},
+    )
+
+    # Count languages
+    for a in archivos_fuente:
+        lang = a.get("lenguaje", "Unknown")
+        project_analysis.languages[lang] = project_analysis.languages.get(lang, 0) + 1
+
+    builder = ContextBuilder()
+    return builder.build(project_analysis, fake_archivos, [])
 

@@ -1,9 +1,16 @@
 import os
+import re
 import json
 import asyncio
 import boto3
 import structlog
 from typing import List, Dict
+
+try:
+    import json_repair
+    HAS_JSON_REPAIR = True
+except ImportError:
+    HAS_JSON_REPAIR = False
 
 logger = structlog.get_logger()
 
@@ -77,7 +84,64 @@ def get_bedrock_client():
         logger.error("error_initializing_bedrock", error=str(e), profile=PROFILE_NAME)
         raise
 
-async def bedrock_llm_call(prompt: str, function_name: str) -> dict:
+def _safe_parse_json(text: str, context_name: str = "") -> dict:
+    """
+    Parse JSON with a 3-level fallback chain:
+      1. json.loads(text)
+      2. Clean markdown wrappers → retry json.loads
+      3. json_repair.loads(text)  (if library available)
+      4. Return error dict with raw excerpt
+    """
+    # Level 1: direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Level 2: strip markdown code fences
+    cleaned = text
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in cleaned:
+        cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+
+    # Remove control characters that break JSON
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Level 3: json_repair
+    if HAS_JSON_REPAIR:
+        try:
+            repaired = json_repair.loads(cleaned)
+            if isinstance(repaired, dict):
+                logger.info("json_repaired_successfully", context=context_name)
+                return repaired
+        except Exception:
+            pass
+
+    # Level 4: give up — return error with raw excerpt for debugging
+    logger.warning("json_parse_failed_all_levels", context=context_name, raw_excerpt=text[:200])
+    return {
+        "error": f"JSON malformado para {context_name}",
+        "raw_response": text[:500],
+    }
+
+
+def _calc_max_tokens(code_length: int) -> int:
+    """Calculate dynamic max_tokens based on code size."""
+    if code_length < 100:
+        return 1024
+    elif code_length <= 500:
+        return 1536
+    else:
+        return 2048
+
+
+async def bedrock_llm_call(prompt: str, function_name: str, max_tokens: int = 1024) -> dict:
     """
     Ejecuta una llamada asíncrona a Claude en AWS Bedrock
     usando asyncio.to_thread para no bloquear el Worker de FastAPI.
@@ -86,7 +150,7 @@ async def bedrock_llm_call(prompt: str, function_name: str) -> dict:
         client = get_bedrock_client()
         payload = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 512,
+            "max_tokens": max_tokens,
             "temperature": 0.1, 
             "messages": [
                 {
@@ -105,13 +169,7 @@ async def bedrock_llm_call(prompt: str, function_name: str) -> dict:
         body = json.loads(response['body'].read().decode('utf-8'))
         response_text = body['content'][0]['text']
         
-        # Limpieza robusta del JSON frente a alucinaciones menores
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].strip()
-            
-        return json.loads(response_text)
+        return _safe_parse_json(response_text, function_name)
 
     try:
         return await asyncio.to_thread(_invoke)
@@ -132,19 +190,22 @@ async def analyze_functions_batch(funciones: List[Dict], max_concurrent: int = 5
     """
     semaphore = asyncio.Semaphore(max_concurrent)
     
-    async def _limited_call(prompt, name):
+    async def _limited_call(prompt, name, tokens=1024):
         async with semaphore:
-            return await bedrock_llm_call(prompt, name)
+            return await bedrock_llm_call(prompt, name, max_tokens=tokens)
     
     tareas = []
     
     for func in funciones:
+        code = func.get('codigo_original', 'Sin código')
+        code_lines = code.count('\n') + 1
+        tokens = _calc_max_tokens(code_lines)
         prompt = PROMPT_TACTICO.format(
             nombre_funcion=func.get('nombre_funcion'),
             esquema_clase=func.get('componente', 'Desconocido'),
-            codigo_original=func.get('codigo_original', 'Sin código')
+            codigo_original=code
         )
-        tareas.append(_limited_call(prompt, func.get('nombre_funcion')))
+        tareas.append(_limited_call(prompt, func.get('nombre_funcion'), tokens))
         
     logger.info("llm_batch_started", size=len(tareas))
     resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
@@ -186,13 +247,16 @@ async def analyze_files_batch(archivos: List[Dict], max_concurrent: int = 3) -> 
     tareas = []
     
     for archivo in archivos:
+        code = archivo.get('codigo_completo', 'Sin código')
+        code_lines = code.count('\n') + 1
+        tokens = _calc_max_tokens(code_lines)
         prompt = PROMPT_ARCHIVO.format(
             nombre_archivo=archivo.get('nombre_archivo'),
             lenguaje=archivo.get('lenguaje', 'Desconocido'),
             capa=archivo.get('capa', 'Sin clasificar'),
-            codigo_completo=archivo.get('codigo_completo', 'Sin código')
+            codigo_completo=code
         )
-        tareas.append(_limited_call(prompt, archivo.get('nombre_archivo')))
+        tareas.append(_limited_call(prompt, archivo.get('nombre_archivo'), tokens))
         
     logger.info("llm_files_batch_started", size=len(tareas))
     resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
@@ -269,21 +333,25 @@ async def analyze_files_batch_with_context(
     """
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def _limited_call(prompt, name):
+    async def _limited_call(prompt, name, tokens=1024):
         async with semaphore:
-            return await bedrock_llm_call(prompt, name)
+            return await bedrock_llm_call(prompt, name, max_tokens=tokens)
 
     tareas = []
 
     for archivo in archivos:
         # Use context-enriched prompt if context is available
         contexto = archivo.get("contexto_proyecto", "")
+        code = archivo.get("codigo_completo", "Sin código")
+        code_lines = code.count('\n') + 1
+        tokens = _calc_max_tokens(code_lines)
+
         if contexto:
             prompt = PROMPT_ARCHIVO_CON_CONTEXTO.format(
                 nombre_archivo=archivo.get("nombre_archivo"),
                 lenguaje=archivo.get("lenguaje", "Desconocido"),
                 capa=archivo.get("capa", "Sin clasificar"),
-                codigo_completo=archivo.get("codigo_completo", "Sin código"),
+                codigo_completo=code,
                 contexto_proyecto=contexto,
             )
         else:
@@ -292,9 +360,9 @@ async def analyze_files_batch_with_context(
                 nombre_archivo=archivo.get("nombre_archivo"),
                 lenguaje=archivo.get("lenguaje", "Desconocido"),
                 capa=archivo.get("capa", "Sin clasificar"),
-                codigo_completo=archivo.get("codigo_completo", "Sin código"),
+                codigo_completo=code,
             )
-        tareas.append(_limited_call(prompt, archivo.get("nombre_archivo")))
+        tareas.append(_limited_call(prompt, archivo.get("nombre_archivo"), tokens))
 
     logger.info("llm_files_context_batch_started", size=len(tareas))
     resultados_ia = await asyncio.gather(*tareas, return_exceptions=True)
