@@ -31,6 +31,14 @@ class ArchivoFuenteDetail(BaseModel):
     llamadas_externas: int = 0
     complejidad_ciclomatica: int | None = None
     lineas_codigo: int | None = None
+    complejidad_ciclomatica: int | None = None
+    lineas_codigo: int | None = None
+    resumen: str | None = None
+    metadata: dict | None = None
+    commit_hash: str | None = None
+    build_number: str | None = None
+    escaneado_en: datetime | None = None
+    activo: bool = True
     analisis_ia: dict | None = None
 
 
@@ -45,10 +53,16 @@ class UnidadLogicaDetail(BaseModel):
     complejidad: int | None = None
     lineas_codigo: int | None = None
     accede_bd: bool = False
+    llamadas_externas: int = 0
     docstring: bool = False
     capa: str | None = None
     overall_score: float | None = None
     risk_level: str | None = None
+    resumen: str | None = None
+    modifica_estado: bool | None = None
+    auto_clasificado: bool = False
+    metadata: dict | None = None
+    activo: bool = True
     analisis_ia: dict | None = None
 
 
@@ -66,6 +80,15 @@ class EscaneoSummary(BaseModel):
     risk_distribution: dict[str, int] = Field(default_factory=dict)
     avg_complexity: float = 0
     max_complexity: int = 0
+    seguridad: dict | None = None
+    negocio: dict | None = None
+    dominios_negocio: dict | None = None
+    cumplimiento: dict | None = None
+    rendimiento: dict | None = None
+    escaneado_en: datetime | None = None
+    generado_por: str | None = None
+    build_number: str | None = None
+    activo: bool = True
 
 
 class ScanResults(BaseModel):

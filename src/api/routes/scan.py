@@ -53,19 +53,26 @@ def _build_results(result) -> dict:
     """Convert PipelineResult into a serializable dict."""
     archivos = []
     for a in result.archivos:
+        meta = json.loads(a.metadata) if getattr(a, 'metadata', None) else {}
+        
         archivos.append({
             "nombre": a.nombre,
-            "ruta_archivo": a.ruta_archivo,
+            "ruta_archivo": getattr(a, 'ruta_archivo', None) or a.nombre,
             "proposito": a.proposito,
             "capa": a.capa,
             "lenguaje": a.lenguaje,
-            "total_funciones": a.total_funciones,
-            "total_clases": a.total_clases,
-            "endpoints": a.endpoints,
-            "operaciones_bd": a.operaciones_bd,
-            "llamadas_externas": a.llamadas_externas,
-            "complejidad_ciclomatica": a.complejidad_ciclomatica,
-            "lineas_codigo": a.lineas_codigo,
+            "total_funciones": getattr(a, 'total_funciones', 0) or 0,
+            "total_clases": getattr(a, 'total_clases', 0) or 0,
+            "endpoints": getattr(a, 'endpoints', 0) or 0,
+            "operaciones_bd": getattr(a, 'operaciones_bd', 0) or 0,
+            "llamadas_externas": getattr(a, 'llamadas_externas', 0) or 0,
+            "complejidad_ciclomatica": getattr(a, 'complejidad_ciclomatica', None),
+            "lineas_codigo": getattr(a, 'lineas_codigo', None),
+            "metadata": meta,
+            "commit_hash": getattr(a, 'commit_hash', None),
+            # El pipeline no tiene fields IA aún pero reservamos el field por si _build_results se llama pos-enrich
+            "resumen": None, 
+            "activo": True
         })
 
     unidades = []
@@ -79,21 +86,25 @@ def _build_results(result) -> dict:
     current_archivo_unidad_count = 0
 
     for u in result.unidades:
-        meta = json.loads(u.metadata) if u.metadata else {}
+        meta = json.loads(u.metadata) if getattr(u, 'metadata', None) else {}
         unidades.append({
             "nombre": u.nombre,
             "tipo": u.tipo,
             "archivo": "",  # Will be filled below
-            "parent": u.parent_id.replace("TEMP_CLASS_", "") if u.parent_id else None,
-            "linea_inicio": u.linea_inicio,
-            "linea_fin": u.linea_fin,
-            "complejidad": u.complejidad,
-            "lineas_codigo": u.lineas_codigo,
-            "accede_bd": u.accede_bd,
-            "docstring": u.docstring,
+            "parent": getattr(u, 'parent_id', None).replace("TEMP_CLASS_", "") if getattr(u, 'parent_id', None) else None,
+            "linea_inicio": getattr(u, 'linea_inicio', None),
+            "linea_fin": getattr(u, 'linea_fin', None),
+            "complejidad": getattr(u, 'complejidad', None),
+            "lineas_codigo": getattr(u, 'lineas_codigo', None),
+            "accede_bd": getattr(u, 'accede_bd', False),
+            "llamadas_externas": getattr(u, 'llamadas_externas', 0),
+            "docstring": getattr(u, 'docstring', False),
             "capa": meta.get("capa"),
             "overall_score": meta.get("overall_score"),
             "risk_level": meta.get("risk_level"),
+            "metadata": meta,
+            "resumen": None, # Will be filled if IA enrichment exists
+            "activo": True
         })
 
     # Associate unidades with their archivo
@@ -130,16 +141,18 @@ def _build_results(result) -> dict:
     escaneo = {
         "score_general": result.score_general,
         "nivel_riesgo": result.nivel_riesgo,
-        "archivos_total": result.processed_files,
+        "archivos_total": getattr(result, 'processed_files', sum(1 for a in result.archivos)),
         "funciones_total": sum(1 for u in result.unidades if u.tipo == "FUNCION"),
         "clases_total": sum(1 for u in result.unidades if u.tipo == "CLASE"),
-        "lineas_total": sum(a.lineas_codigo or 0 for a in result.archivos),
-        "commit_hash": result.archivos[0].commit_hash if result.archivos else None,
+        "lineas_total": sum(getattr(a, 'lineas_codigo', 0) or 0 for a in result.archivos),
+        "commit_hash": getattr(result.archivos[0], 'commit_hash', None) if result.archivos else None,
         "languages": langs,
         "capas": capas,
         "risk_distribution": risk_dist,
         "avg_complexity": round(sum(complexities) / len(complexities), 1) if complexities else 0,
         "max_complexity": max(complexities) if complexities else 0,
+        "escaneado_en": datetime.now().isoformat(),
+        "activo": True
     }
 
     return {

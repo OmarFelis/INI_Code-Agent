@@ -19,3 +19,5 @@ pip install -e .
 #Levantar base de datos
 docker compose up -d db
 
+#Login AWS
+aws sso login --profile AmazonBedrockLimitedAccess-460896925620
