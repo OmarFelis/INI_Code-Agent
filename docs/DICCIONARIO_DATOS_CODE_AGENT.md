@@ -145,7 +145,9 @@ erDiagram
 | `unidad_logica_id` | `UUID_V7` (FK) | NO | — | FK → `unidades_logicas.id` |
 | `descripcion` | `TEXT` | NO | — | Explicación de la regla de negocio en español |
 | `codigo_relacionado` | `TEXT` | SÍ | — | Snippet de código que implementa la regla |
-
+| `activo_id` | `UUID_V7` | NO | — | Relación FK |
+| `aplicacion_id` | `UUID_V7` | SÍ | — | Relación FK |
+| `creado_por_ia` | `boolean` | NO | — | Para saber si la regla es un primer borrador del agente o ya fue validado. |
 **Índices:**
 - `idx_regla_unidad` → `(unidad_logica_id)`
 

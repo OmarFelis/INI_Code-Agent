@@ -26,6 +26,7 @@ from src.api.schemas.scan_response import (
 from src.db.session import get_session, async_session_factory
 from src.db import repository
 from src.core.enricher import llm_enricher
+from src.core.integration.aone_client import AOneSyncClient
 from src.core.analyzers.context_builder import ContextBuilder
 from src.core.analyzers.worker_pool import _build_context_block
 from src.config import settings
@@ -49,9 +50,15 @@ router = APIRouter(
 )
 
 
-def _build_results(result) -> dict:
+def _build_results(result, request=None) -> dict:
     """Convert PipelineResult into a serializable dict."""
     archivos = []
+    
+    # Obtenemos los IDs y datos del request si existen, si no intentamos sacarlos del result
+    activo_id = getattr(request, 'activo_id', None) or getattr(result, 'activo_id', None)
+    aplicacion_id = getattr(request, 'aplicacion_id', None) or getattr(result, 'aplicacion_id', None)
+    microservice_name = getattr(request, 'microservice_name', None) or getattr(result, 'microservice_name', None)
+
     for a in result.archivos:
         meta = json.loads(a.metadata) if getattr(a, 'metadata', None) else {}
         
@@ -70,9 +77,11 @@ def _build_results(result) -> dict:
             "lineas_codigo": getattr(a, 'lineas_codigo', None),
             "metadata": meta,
             "commit_hash": getattr(a, 'commit_hash', None),
-            # El pipeline no tiene fields IA aún pero reservamos el field por si _build_results se llama pos-enrich
-            "resumen": None, 
-            "activo": True
+            "build_number": getattr(request, 'build_number', getattr(result, 'build_number', None)),
+            "escaneado_en": datetime.now(timezone.utc).isoformat(),
+            "activo": True,
+            "activo_id": activo_id,
+            "aplicacion_id": aplicacion_id
         })
 
     unidades = []
@@ -99,12 +108,15 @@ def _build_results(result) -> dict:
             "accede_bd": getattr(u, 'accede_bd', False),
             "llamadas_externas": getattr(u, 'llamadas_externas', 0),
             "docstring": getattr(u, 'docstring', False),
-            "capa": meta.get("capa"),
             "overall_score": meta.get("overall_score"),
             "risk_level": meta.get("risk_level"),
             "metadata": meta,
             "resumen": None, # Will be filled if IA enrichment exists
-            "activo": True
+            "modifica_estado": None,
+            "auto_clasificado": False,
+            "activo": True,
+            "activo_id": activo_id,
+            "aplicacion_id": aplicacion_id
         })
 
     # Associate unidades with their archivo
@@ -141,18 +153,30 @@ def _build_results(result) -> dict:
     escaneo = {
         "score_general": result.score_general,
         "nivel_riesgo": result.nivel_riesgo,
+        "microservice_name": microservice_name,
         "archivos_total": getattr(result, 'processed_files', sum(1 for a in result.archivos)),
         "funciones_total": sum(1 for u in result.unidades if u.tipo == "FUNCION"),
         "clases_total": sum(1 for u in result.unidades if u.tipo == "CLASE"),
         "lineas_total": sum(getattr(a, 'lineas_codigo', 0) or 0 for a in result.archivos),
         "commit_hash": getattr(result.archivos[0], 'commit_hash', None) if result.archivos else None,
-        "languages": langs,
-        "capas": capas,
-        "risk_distribution": risk_dist,
-        "avg_complexity": round(sum(complexities) / len(complexities), 1) if complexities else 0,
-        "max_complexity": max(complexities) if complexities else 0,
+        "metricas": {
+            "languages": langs,
+            "risk_distribution": risk_dist,
+            "avg_complexity": round(sum(complexities) / len(complexities), 1) if complexities else 0,
+            "max_complexity": max(complexities) if complexities else 0,
+        },
+        "arquitectura": {
+            "capas": capas
+        },
+        "seguridad": None,
+        "negocio": None,
+        "dominios_negocio": None,
+        "cumplimiento": None,
+        "rendimiento": None,
         "escaneado_en": datetime.now().isoformat(),
-        "activo": True
+        "activo": True,
+        "activo_id": activo_id,
+        "aplicacion_id": aplicacion_id
     }
 
     return {
@@ -201,7 +225,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             )
 
             # Build response
-            results_dict = _build_results(result)
+            results_dict = _build_results(result, request=request)
 
             # If repo was cloned, move to repos_cache instead of deleting
             final_project_path = project_path_to_scan
@@ -226,6 +250,15 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 project_path=final_project_path,
             )
             await session.commit()
+
+            # Sincronización a A-ONE DB
+            sync_client = AOneSyncClient()
+            try:
+                await sync_client.sync_scan_results(results_dict)
+            except Exception as sync_e:
+                log.error("aone_sync_failed", error=repr(sync_e))
+            finally:
+                await sync_client.close()
 
             log.info(
                 "background_scan_completed",
@@ -449,6 +482,16 @@ async def _run_enrichment_background_task(job_id: UUID, request: EnrichmentReque
                 results=job.results
             )
             await session.commit()
+            
+            # Sincronización a A-ONE DB
+            sync_client = AOneSyncClient()
+            try:
+                await sync_client.sync_scan_results(job.results)
+            except Exception as sync_e:
+                log.error("aone_sync_failed_enrich", error=repr(sync_e))
+            finally:
+                await sync_client.close()
+                
             log.info("enrichment_completed_successfully")
 
     except Exception as e:
@@ -575,6 +618,16 @@ async def _run_enrich_all_background_task(job_id: UUID):
                 session, job_id, status=job.status, results=job.results
             )
             await session.commit()
+            
+            # Sincronización a A-ONE DB
+            sync_client = AOneSyncClient()
+            try:
+                await sync_client.sync_scan_results(job.results)
+            except Exception as sync_e:
+                log.error("aone_sync_failed_enrich_all", error=repr(sync_e))
+            finally:
+                await sync_client.close()
+                
             log.info("enrich_all_completed", enriched=len(resultados_ia))
 
     except Exception as e:

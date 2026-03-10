@@ -70,16 +70,16 @@ class EscaneoSummary(BaseModel):
     """Scan-level summary with aggregated metrics."""
     score_general: float | None = None
     nivel_riesgo: str | None = None
+    microservice_name: str | None = None
     archivos_total: int = 0
     funciones_total: int = 0
     clases_total: int = 0
     lineas_total: int = 0
     commit_hash: str | None = None
-    languages: dict[str, int] = Field(default_factory=dict)
-    capas: dict[str, int] = Field(default_factory=dict)
-    risk_distribution: dict[str, int] = Field(default_factory=dict)
-    avg_complexity: float = 0
-    max_complexity: int = 0
+    activo_id: str | None = None
+    aplicacion_id: str | None = None
+    metricas: dict | None = None
+    arquitectura: dict | None = None
     seguridad: dict | None = None
     negocio: dict | None = None
     dominios_negocio: dict | None = None
