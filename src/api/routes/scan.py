@@ -212,7 +212,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             if request.repo_url:
                 temp_repo_path = os.path.abspath(f"tmp_repos/{job_id}")
                 log.info("cloning_repository", repo_url=request.repo_url, temp_repo_path=temp_repo_path)
-                await clone_repository(request.repo_url, temp_repo_path)
+                await clone_repository(request.repo_url, temp_repo_path, branch=request.branch)
                 project_path_to_scan = temp_repo_path
 
             # Run pipeline

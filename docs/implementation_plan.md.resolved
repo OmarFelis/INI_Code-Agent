@@ -1,0 +1,55 @@
+# Plan de Integración: Sincronización Code-Agent → A-ONE API
+
+## Objetivo
+Crear un cliente HTTP interno en el Code-Agent que tome el JSON final generado y haga `POST` a los nuevos endpoints Serverless (Lambda) creados por el DBA.
+
+## Endpoints Destino
+- **Escaneos:** `POST .../infra/entities/escaneos`
+- **Archivos:** `POST .../infra/entities/archivos_fuente`
+- **Unidades Lógicas:** `POST .../infra/entities/unidades_logicas`
+- **Reglas Negocio:** `POST .../producto/entities/reglas_negocio`
+
+## Archivos a Crear / Modificar
+
+### 1. [src/core/integration/aone_client.py](file:///c:/INI_Code-Agent/src/core/integration/aone_client.py) [NUEVO]
+Un servicio orquestador ([AOneSyncClient](file:///c:/INI_Code-Agent/src/core/integration/aone_client.py#14-203)) responsable de:
+1. **Orden de Inserción estricto (FKs):**
+   - 1º Crear el `escaneo` y guardar su ID devuelto.
+   - 2º iterar y enviar `archivos_fuente`.
+   - 3º iterar y enviar `unidades_logicas`.
+   - 4º iterar y enviar `reglas_negocio` (si el scan ya fue enriquecido con IA).
+2. **Manejo de Errores y Retries:** Retry exponencial en caso de cold-starts de la Lambda (502/504).
+3. **Mapeo de Payload:** Adecuar las keys de nuestro modelo interno (`ScanResponse`) a la firma exacta que requieren los endpoints PostgREST / Lambda.
+
+### 2. [src/api/routes/scan.py](file:///c:/INI_Code-Agent/src/api/routes/scan.py)
+En el endpoint o background task correspondiente, llamar a `AOneSyncClient.sync_scan(results)` al finalizar un job, o exponer un nuevo endpoint explícito `POST /scan/{job_id}/sync` para dispararlo a demanda.
+
+## Consideraciones de Diseño
+- **Asincronía:** Se usarán peticiones HTTP asíncronas (`httpx` o `aiohttp` si ya está en el proyecto) para no bloquear.
+- **Batcheo (Lotes):** Para `unidades_logicas` (que pueden ser 2000+), enviar arreglos JSON grandes en vez de hacer 2000 peticiones individuales si la API lo soporta.
+
+## Siguientes Pasos
+Validar la estructura de payload esperada por las Lambda (¿Soportan insert masivo/Bulk? ¿Requieren autenticación / API Key en cabeceras?).
+
+## Estrategia Anti-Duplicados (Fusión Opción 1 y Opción 2)
+
+Para asegurar la calidad y evitar inflar la base de datos con duplicados durante re-escaneos del mismo código, implementaremos una estrategia de **"Doble Candado"** (Idempotencia en Código + Integridad en BD).
+
+### Candado 1: Código del Proyecto (UUIDs Deterministas)
+En lugar de generar UUIDs aleatorios (`uuid4`), el Code-Agent calculará firmas matemáticas únicas (hashes) basadas en los datos reales del código. Usaremos `uuid.uuid5()`.
+- **Archivos Fuente ([id](file:///c:/INI_Code-Agent/src/core/analyzers/logical_unit_extractor.py#301-351)):** `uuid5(NAMESPACE_URL, escaneo_id + ruta_archivo)`. Si el agente escanea el mismo archivo en la misma corrida o reintento, el [id](file:///c:/INI_Code-Agent/src/core/analyzers/logical_unit_extractor.py#301-351) será matemáticamente idéntico. Al enviarlo a A-ONE, el header `Prefer: resolution=merge-duplicates` lo convertirá automáticamente en un **Update** (Upsert) en lugar de crear una fila nueva.
+- **Unidades Lógicas ([id](file:///c:/INI_Code-Agent/src/core/analyzers/logical_unit_extractor.py#301-351)):** `uuid5(NAMESPACE_URL, archivo_id + nombre + tipo)`. Garantiza que una función "X" dentro del archivo "Y" siempre tenga el mismo ID.
+- **Reglas de Negocio ([id](file:///c:/INI_Code-Agent/src/core/analyzers/logical_unit_extractor.py#301-351)):** `uuid5(NAMESPACE_URL, unidad_logica_id + descripcion)`. Evita que al re-enriquecer se dupliquen exactamente las mismas reglas.
+
+### Candado 2: Base de Datos A-ONE (Unique Constraints)
+Como red de seguridad final (por si otro sistema o un error humano intenta insertar basura), el DBA deberá aplicar restricciones físicas en PostgreSQL.
+- **Tabla `archivos_fuente`:** Añadir un `UNIQUE CONSTRAINT` sobre [(escaneo_id, ruta_archivo)](file:///c:/INI_Code-Agent/trigger_ai_analysis.py#12-95).
+- **Tabla `unidades_logicas`:** Añadir un `UNIQUE CONSTRAINT` sobre [(archivo_id, nombre, tipo)](file:///c:/INI_Code-Agent/trigger_ai_analysis.py#12-95).
+- **Tabla `reglas_negocio`:** Añadir un `UNIQUE CONSTRAINT` sobre [(unidad_logica_id, descripcion)](file:///c:/INI_Code-Agent/trigger_ai_analysis.py#12-95).
+
+**Beneficio de la Fusión:** 
+El *Candado 1* hace que la aplicación sea elegante: se comporta suavemente haciendo "Upserts" sin molestar a la BD con errores. El *Candado 2* asegura que la BD es impenetrable a nivel de arquitectura, garantizando una calidad de datos del 100% en el Dashboard.
+
+### User Review Required
+> [!IMPORTANT]
+> El DBA deberá correr los scripts `ALTER TABLE ... ADD CONSTRAINT` para el Candado 2. ¿Deseas que proceda a implementar el Candado 1 (modificar [aone_client.py](file:///c:/INI_Code-Agent/src/core/integration/aone_client.py) con `uuid5`) ahora mismo?

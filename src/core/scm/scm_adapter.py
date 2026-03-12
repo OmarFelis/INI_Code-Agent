@@ -17,7 +17,7 @@ def _remove_readonly(func, path, excinfo):
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
-async def clone_repository(repo_url: str, dest_dir: str) -> str:
+async def clone_repository(repo_url: str, dest_dir: str, branch: str | None = None) -> str:
     """
     Asynchronously clones a Git repository to dest_dir.
     If GIT_USERNAME and GIT_TOKEN are set, injects them into the URL for basic auth.
@@ -42,7 +42,10 @@ async def clone_repository(repo_url: str, dest_dir: str) -> str:
         raise RuntimeError("Git executable not found in system PATH.")
 
     # Construir el comando: username en la URL + Git Credential Manager del SO se encarga del password
-    cmd = [git_exec, "clone", "--depth", "1", final_url, dest_dir]
+    cmd = [git_exec, "clone", "--depth", "1"]
+    if branch:
+        cmd += ["--branch", branch]
+    cmd += [final_url, dest_dir]
 
     log.info("git_clone_executing", command_safe=f"git clone --depth 1 {parsed.scheme}://{settings.git_username or ''}@***/{parsed.path} {dest_dir}")
 
