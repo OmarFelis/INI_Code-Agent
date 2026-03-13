@@ -99,6 +99,7 @@ class UnidadLogica(BaseModel):
     docstring: bool = False
     resumen: str | None = None    # LLM-generated (Phase 2)
     metadata: str | None = None   # TEXT — JSON string with scoring, capa, risk, etc.
+    analisis_ia: dict | None = None  # JSONB — full IA analysis
     activo: bool = True
 
 

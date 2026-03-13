@@ -748,6 +748,16 @@ async def _run_enrich_files_background_task(job_id: UUID):
                 session, job_id, status=job.status, results=job.results
             )
             await session.commit()
+
+            # Sincronización a A-ONE DB
+            sync_client = AOneSyncClient()
+            try:
+                await sync_client.sync_scan_results(job.results)
+            except Exception as sync_e:
+                log.error("aone_sync_failed_enrich_files", error=repr(sync_e))
+            finally:
+                await sync_client.close()
+
             log.info("enrich_files_completed", enriched=len(resultados_ia))
 
     except Exception as e:

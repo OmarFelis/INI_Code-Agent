@@ -2,6 +2,7 @@
 A-ONE Sync Client — Envia resultados a la BD de A-ONE mediante API Lambda (PostgREST style).
 Soporta Upsert (Update on Conflict) para evitar duplicados.
 """
+import json
 import uuid
 import httpx
 import structlog
@@ -111,8 +112,11 @@ class AOneSyncClient:
         # --- FASE 2: ARCHIVOS ---
         # We need to inject the FK `escaneo_id` and generate PKs for files
         for f in archivos_data:
-            f.pop("analisis_ia", None)  # <-- Remover para evitar error de columna inexistente en A-ONE
+            ia = f.pop("analisis_ia", None)
+            if ia is not None:
+                f["analisis_ia"] = json.dumps(ia) if isinstance(ia, dict) else ia
             f["escaneo_id"] = scan_id
+            f["escaneado"] = True
             f["created_at"] = f.get("created_at", now_str)
             if "id" not in f:
                 f["id"] = str(uuid.uuid4())
@@ -160,9 +164,11 @@ class AOneSyncClient:
         # Extract rules from current IA metadata (if available from enrich)
         reglas_negocio = []
         for u in unidades_data:
-            ia_data = u.pop("analisis_ia", None)  # <-- Remover para evitar error de PostgREST
-            
+            ia_data = u.get("analisis_ia", None)
+            u["escaneado"] = True
+
             if ia_data:
+                u["analisis_ia"] = ia_data if isinstance(ia_data, dict) else json.loads(ia_data)
                 # Mapeo a columnas raíz de la tabla unidades_logicas
                 if "resumen_funcional" in ia_data:
                     u["resumen"] = ia_data["resumen_funcional"]
