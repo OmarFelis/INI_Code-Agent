@@ -181,21 +181,21 @@ class AOneSyncClient:
                     
                 if "reglas_de_negocio" in ia_data:
                     for regla in ia_data["reglas_de_negocio"]:
-                        # Soporte para regla como diccinario (LLM actual) o string
                         desc = regla.get("descripcion", "") if isinstance(regla, dict) else str(regla)
+                        if not desc:
+                            continue
                         codigo = regla.get("codigo_relacionado") if isinstance(regla, dict) else None
-                    
-                    reglas_negocio.append({
-                        "id": str(uuid.uuid4()),
-                        "unidad_logica_id": u["id"], # FK
-                        "descripcion": desc,
-                        "codigo_relacionado": codigo, # Inyectado explícitamente desde LLM payload
-                        "activo_id": escaneo_data.get("activo_id"),
-                        "aplicacion_id": escaneo_data.get("aplicacion_id"),
-                        "creado_por_ia": True,
-                        "activo": True,
-                        "created_at": now_str
-                    })
+                        reglas_negocio.append({
+                            "id": str(uuid.uuid4()),
+                            "unidad_logica_id": u["id"],
+                            "descripcion": desc,
+                            "codigo_relacionado": codigo,
+                            "activo_id": escaneo_data.get("activo_id"),
+                            "aplicacion_id": escaneo_data.get("aplicacion_id"),
+                            "creado_por_ia": True,
+                            "activo": True,
+                            "created_at": now_str
+                        })
 
         if unidades_data:
             # Concurrent POST para Unidades_logicas, ya limpio de Analysis_ia
