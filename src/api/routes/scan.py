@@ -205,7 +205,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             if request.repo_url:
                 temp_repo_path = os.path.abspath(f"tmp_repos/{job_id}")
                 log.info("cloning_repository", repo_url=request.repo_url)
-                await clone_repository(request.repo_url, temp_repo_path)
+                await clone_repository(request.repo_url, temp_repo_path, branch=request.branch)
                 project_path_to_scan = temp_repo_path
 
             # ── Idempotency check ─────────────────────────────────
@@ -217,7 +217,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                     microservice_name=request.microservice_name,
                     commit_hash=commit_hash,
                 )
-                if existing:
+                if existing and existing.processed_files > 0:
                     log.info(
                         "scan_skipped_already_exists",
                         existing_job_id=str(existing.id),
@@ -240,6 +240,17 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 microservice_name=request.microservice_name,
                 aone_client=None,
             )
+
+            if result.processed_files == 0:
+                await repository.update_scan_job_status(
+                    session, job_id, status="FAILED",
+                    error_message="No source files found in repository"
+                )
+                await session.commit()
+                if temp_repo_path and os.path.exists(temp_repo_path):
+                    cleanup_repository(temp_repo_path)
+                    temp_repo_path = None
+                return
 
             # Move repo to cache
             final_project_path = project_path_to_scan
@@ -272,6 +283,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
 
             # ── Insert archivos_fuente ────────────────────────────
             archivo_orm_map: dict[str, UUID] = {}  # nombre -> id
+            archivo_sync_list = []  # para A-ONE sync con IDs reales
             escaneado_en = datetime.now()
             for a in archivos_data:
                 orm = await repository.create_archivo_fuente(
@@ -297,6 +309,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                     escaneado_en=escaneado_en,
                 )
                 archivo_orm_map[a["nombre"]] = orm.id
+                archivo_sync_list.append({**a, "id": str(orm.id), "escaneo_id": str(job_id)})
 
             # ── Insert unidades_logicas ───────────────────────────
             # First pass: insert CLASEs, build class name -> id map
@@ -354,6 +367,10 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 )
 
             await session.commit()
+
+            # ── Inject IDs reales para evitar duplicados en A-ONE ─
+            results_dict["escaneo"]["id"] = str(job_id)
+            results_dict["archivos_fuente"] = archivo_sync_list
 
             sync_client = AOneSyncClient()
             try:
@@ -767,6 +784,38 @@ async def _run_enrich_all_background_task(job_id: UUID):
 
             await session.commit()
             log.info("enrich_all_completed", enriched=len(resultados_ia))
+
+            # ── Sync reglas a A-ONE ────────────────────────────────
+            from src.db import repository as repo
+            reglas_orm = []
+            for idx, res in enumerate(resultados_ia):
+                unidad_id_str = payload_funciones[idx].get("_unidad_id")
+                if unidad_id_str and res and res.get("analisis_ia"):
+                    reglas = res["analisis_ia"].get("reglas_de_negocio") or []
+                    unidad = next((u for u in unidades_orm if str(u.id) == unidad_id_str), None)
+                    if unidad and reglas:
+                        for regla in reglas:
+                            desc = regla.get("descripcion", "") if isinstance(regla, dict) else str(regla)
+                            if not desc:
+                                continue
+                            reglas_orm.append({
+                                "unidad_logica_id": str(unidad.id),
+                                "activo_id": str(unidad.activo_id),
+                                "aplicacion_id": str(unidad.aplicacion_id),
+                                "descripcion": desc,
+                                "codigo_relacionado": regla.get("codigo_relacionado") if isinstance(regla, dict) else None,
+                                "creado_por_ia": True,
+                                "activo": True,
+                            })
+            if reglas_orm:
+                sync_client = AOneSyncClient()
+                try:
+                    await sync_client._post_upsert_many("entities/reglas_negocio", reglas_orm)
+                    log.info("enrich_all_reglas_synced", count=len(reglas_orm))
+                except Exception as sync_e:
+                    log.error("enrich_all_reglas_sync_failed", error=repr(sync_e))
+                finally:
+                    await sync_client.close()
 
     except Exception as e:
         log.error("enrich_all_failed", error=repr(e))

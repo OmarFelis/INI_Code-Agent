@@ -17,7 +17,7 @@ def _remove_readonly(func, path, excinfo):
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
-async def clone_repository(repo_url: str, dest_dir: str) -> str:
+async def clone_repository(repo_url: str, dest_dir: str, branch: str | None = None) -> str:
     """
     Asynchronously clones a Git repository to dest_dir using SSH.
     Converts HTTPS Bitbucket URLs to SSH format automatically.
@@ -39,8 +39,12 @@ async def clone_repository(repo_url: str, dest_dir: str) -> str:
     if not git_exec:
         raise RuntimeError("Git executable not found in system PATH.")
 
-    cmd = [git_exec, "clone", "--depth", "1", final_url, dest_dir]
-    log.info("git_clone_executing", command_safe=f"git clone --depth 1 {final_url} {dest_dir}")
+    cmd = [git_exec, "clone", "--depth", "1"]
+    if branch:
+        cmd += ["--branch", branch]
+    cmd += [final_url, dest_dir]
+    branch_info = f" --branch {branch}" if branch else ""
+    log.info("git_clone_executing", command_safe=f"git clone --depth 1{branch_info} {final_url} {dest_dir}")
 
     def _run_git():
         return subprocess.run(
