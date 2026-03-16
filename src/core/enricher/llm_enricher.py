@@ -40,10 +40,10 @@ Tu tarea es leer código fuente y extraer (1) un resumen funcional conciso y (2)
 {esquema_clase}
 </esquema_clase>
 
-Analiza la siguiente función concreta de este componente ({nombre_funcion}):
-<codigo_funcion>
+Analiza el siguiente {tipo_unidad} ({nombre_funcion}):
+<codigo_fuente>
 {codigo_original}
-</codigo_funcion>
+</codigo_fuente>
 
 INSTRUCCIONES: Extrae reglas de negocio (condicionales) y un resumen funcional estructurado. Para cada regla, incluye la explicación y el fragmento de código (snippet) exacto que evalúa la condición.
 Devuelve EXACTAMENTE este formato JSON purista sin bloques de markdown:
@@ -205,12 +205,7 @@ async def bedrock_llm_call(prompt: str, function_name: str, max_tokens: int = 10
         return result
     except Exception as e:
         logger.error("bedrock_call_failed", function=function_name, error=str(e))
-        return {
-             "error": str(e),
-             "resumen_funcional": f"Falló Bedrock para {function_name}",
-             "modifica_estado": False,
-             "reglas_de_negocio": []
-        }
+        return None
 
 async def analyze_functions_batch(funciones: List[Dict], max_concurrent: int = 5) -> List[Dict]:
     """
@@ -232,6 +227,7 @@ async def analyze_functions_batch(funciones: List[Dict], max_concurrent: int = 5
         tokens = _calc_max_tokens(code_lines)
         prompt = PROMPT_TACTICO.format(
             nombre_funcion=func.get('nombre_funcion'),
+            tipo_unidad=func.get('tipo_unidad', 'función'),
             esquema_clase=func.get('componente', 'Desconocido'),
             codigo_original=code
         )
@@ -253,11 +249,11 @@ async def analyze_functions_batch(funciones: List[Dict], max_concurrent: int = 5
             "analisis_ia": {}
         }
         
-        if isinstance(res_ia, Exception):
-             enriched['analisis_ia'] = {'error': str(res_ia)}
+        if isinstance(res_ia, Exception) or res_ia is None or (isinstance(res_ia, dict) and "error" in res_ia):
+            enriched['analisis_ia'] = None
         else:
-             enriched['analisis_ia'] = res_ia
-             
+            enriched['analisis_ia'] = res_ia
+
         resultados_finales.append(enriched)
 
     return resultados_finales
@@ -303,11 +299,11 @@ async def analyze_files_batch(archivos: List[Dict], max_concurrent: int = 3) -> 
             "analisis_ia": {}
         }
         
-        if isinstance(res_ia, Exception):
-             enriched['analisis_ia'] = {'error': str(res_ia)}
+        if isinstance(res_ia, Exception) or res_ia is None or (isinstance(res_ia, dict) and "error" in res_ia):
+            enriched['analisis_ia'] = None
         else:
-             enriched['analisis_ia'] = res_ia
-             
+            enriched['analisis_ia'] = res_ia
+
         resultados_finales.append(enriched)
 
     return resultados_finales
@@ -409,8 +405,8 @@ async def analyze_files_batch_with_context(
             "analisis_ia": {},
         }
 
-        if isinstance(res_ia, Exception):
-            enriched["analisis_ia"] = {"error": str(res_ia)}
+        if isinstance(res_ia, Exception) or res_ia is None or (isinstance(res_ia, dict) and "error" in res_ia):
+            enriched["analisis_ia"] = None
         else:
             enriched["analisis_ia"] = res_ia
 

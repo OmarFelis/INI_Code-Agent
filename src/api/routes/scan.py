@@ -197,7 +197,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
     async with async_session_factory() as session:
         temp_repo_path = None
         try:
-            await repository.update_scan_job_status(session, job_id, status="IN_PROGRESS")
+            await repository.update_scan_job_status(session, job_id, status="RUNNING")
             await session.commit()
 
             project_path_to_scan = request.project_path
@@ -699,7 +699,12 @@ async def _run_enrich_all_background_task(job_id: UUID):
 
             mapa_archivos = {a.nombre: a.ruta_archivo for a in archivos_orm}
             payload_funciones = []
-            unidades_pendientes = [u for u in unidades_orm if u.tipo == "FUNCION" and not u.analisis_ia]
+            unidades_pendientes = [
+                u for u in unidades_orm
+                if u.tipo in ("FUNCION", "CLASE") and (
+                    not u.analisis_ia or "error" in u.analisis_ia
+                )
+            ]
 
             for unit in unidades_pendientes:
                 ruta_relativa = mapa_archivos.get(unit.nombre) or next(
@@ -727,6 +732,7 @@ async def _run_enrich_all_background_task(job_id: UUID):
                     payload_funciones.append({
                         "_unidad_id": str(unit.id),
                         "nombre_funcion": unit.nombre,
+                        "tipo_unidad": "clase" if unit.tipo == "CLASE" else "función",
                         "componente": esquema_clase,
                         "archivo": ruta_relativa,
                         "codigo_original": codigo_original,
@@ -823,7 +829,7 @@ async def _run_enrich_files_background_task(job_id: UUID):
                 log.info("enrich_files_context_built", modules=len(project_context.manifest.modules))
 
             payload_archivos = []
-            archivos_pendientes = [a for a in archivos_orm if not a.analisis_ia]
+            archivos_pendientes = [a for a in archivos_orm if not a.analisis_ia or "error" in a.analisis_ia]
 
             for archivo in archivos_pendientes:
                 ruta_relativa = archivo.ruta_archivo

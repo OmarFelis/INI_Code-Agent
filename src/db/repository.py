@@ -3,7 +3,12 @@ Code-Agent — Data access layer.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time as naive datetime (TIMESTAMP WITHOUT TIME ZONE)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,9 +85,9 @@ async def update_scan_job_status(
     values: dict = {"status": status}
 
     if status == "RUNNING":
-        values["started_at"] = datetime.utcnow()
+        values["started_at"] = _utcnow()
     elif status in ("COMPLETED", "PARTIAL", "FAILED"):
-        values["completed_at"] = datetime.utcnow()
+        values["completed_at"] = _utcnow()
 
     if total_files is not None:
         values["total_files"] = total_files
@@ -192,7 +197,7 @@ async def update_archivo_analisis_ia(
     await session.execute(
         update(ArchivoFuenteORM)
         .where(ArchivoFuenteORM.id == archivo_id)
-        .values(analisis_ia=analisis_ia, updated_at=datetime.utcnow())
+        .values(analisis_ia=analisis_ia, updated_at=_utcnow())
     )
 
 
@@ -261,7 +266,7 @@ async def update_unidad_analisis_ia(
     await session.execute(
         update(UnidadLogicaORM)
         .where(UnidadLogicaORM.id == unidad_id)
-        .values(analisis_ia=analisis_ia, updated_at=datetime.utcnow())
+        .values(analisis_ia=analisis_ia, updated_at=_utcnow())
     )
 
 
