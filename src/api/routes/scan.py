@@ -189,7 +189,7 @@ def _build_results(result, request=None) -> dict:
 async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
     """Background task that runs the pipeline and writes to normalized tables."""
     from src.core.analyzers.pipeline import run as run_pipeline
-    from src.core.scm.scm_adapter import clone_repository, cleanup_repository
+    from src.core.scm.scm_adapter import clone_repository, cleanup_repository, get_commit_hash
 
     log = logger.bind(job_id=str(job_id), microservice=request.microservice_name)
     log.info("background_scan_started")
@@ -207,6 +207,31 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 log.info("cloning_repository", repo_url=request.repo_url)
                 await clone_repository(request.repo_url, temp_repo_path)
                 project_path_to_scan = temp_repo_path
+
+            # ── Idempotency check ─────────────────────────────────
+            commit_hash = get_commit_hash(project_path_to_scan)
+            if commit_hash and request.microservice_name:
+                existing = await repository.find_completed_scan_by_commit(
+                    session,
+                    activo_id=request.activo_id,
+                    microservice_name=request.microservice_name,
+                    commit_hash=commit_hash,
+                )
+                if existing:
+                    log.info(
+                        "scan_skipped_already_exists",
+                        existing_job_id=str(existing.id),
+                        commit_hash=commit_hash,
+                    )
+                    if temp_repo_path and os.path.exists(temp_repo_path):
+                        cleanup_repository(temp_repo_path)
+                        temp_repo_path = None
+                    await repository.update_scan_job_status(
+                        session, job_id, status="SKIPPED",
+                        error_message=f"Duplicate of completed scan {existing.id} at commit {commit_hash}"
+                    )
+                    await session.commit()
+                    return
 
             result = await run_pipeline(
                 project_path=project_path_to_scan,
@@ -242,6 +267,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 processed_files=result.processed_files,
                 failed_files=result.failed_files if result.failed_files else None,
                 project_path=final_project_path,
+                commit_hash=commit_hash,
             )
 
             # ── Insert archivos_fuente ────────────────────────────

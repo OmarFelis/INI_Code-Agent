@@ -11,6 +11,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import EscaneoORM, ArchivoFuenteORM, UnidadLogicaORM, ReglaNegocioORM
 
 
+async def find_completed_scan_by_commit(
+    session: AsyncSession,
+    activo_id: str,
+    microservice_name: str,
+    commit_hash: str,
+) -> EscaneoORM | None:
+    """Find an existing COMPLETED scan for the same activo+microservice+commit."""
+    result = await session.execute(
+        select(EscaneoORM).where(
+            EscaneoORM.activo_id == activo_id,
+            EscaneoORM.microservice_name == microservice_name,
+            EscaneoORM.commit_hash == commit_hash,
+            EscaneoORM.status == "COMPLETED",
+        ).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_scan_job(
     session: AsyncSession,
     *,
@@ -56,6 +74,7 @@ async def update_scan_job_status(
     error_message: str | None = None,
     results: dict | None = None,
     project_path: str | None = None,
+    commit_hash: str | None = None,
 ) -> None:
     """Update scan job status and progress fields."""
     values: dict = {"status": status}
@@ -79,6 +98,8 @@ async def update_scan_job_status(
         values["results"] = results
     if project_path is not None:
         values["project_path"] = project_path
+    if commit_hash is not None:
+        values["commit_hash"] = commit_hash
 
     await session.execute(
         update(EscaneoORM).where(EscaneoORM.id == job_id).values(**values)

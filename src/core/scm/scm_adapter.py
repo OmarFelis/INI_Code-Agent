@@ -61,6 +61,23 @@ async def clone_repository(repo_url: str, dest_dir: str) -> str:
     log.info("clone_repository_success")
     return dest_dir
 
+def get_commit_hash(repo_path: str) -> str | None:
+    """
+    Returns the HEAD commit hash of a cloned repository, or None if it fails.
+    """
+    try:
+        git_exec = shutil.which("git") or "git"
+        result = subprocess.run(
+            [git_exec, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False, cwd=repo_path
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception as e:
+        logger.warning("get_commit_hash_failed", repo_path=repo_path, error=str(e))
+    return None
+
+
 def cleanup_repository(repo_path: str):
     """
     Synchronously deletes the cloned repository from the local filesystem.
