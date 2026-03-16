@@ -187,35 +187,27 @@ def _build_results(result, request=None) -> dict:
 
 
 async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
-    """Background task that runs the pipeline and updates the job status."""
+    """Background task that runs the pipeline and writes to normalized tables."""
     from src.core.analyzers.pipeline import run as run_pipeline
     from src.core.scm.scm_adapter import clone_repository, cleanup_repository
-    
-    log = logger.bind(
-        job_id=str(job_id),
-        microservice=request.microservice_name,
-        project_path=request.project_path,
-        repo_url=request.repo_url,
-    )
 
+    log = logger.bind(job_id=str(job_id), microservice=request.microservice_name)
     log.info("background_scan_started")
 
     async with async_session_factory() as session:
         temp_repo_path = None
         try:
-            # Update status to IN_PROGRESS
             await repository.update_scan_job_status(session, job_id, status="IN_PROGRESS")
             await session.commit()
-            
+
             project_path_to_scan = request.project_path
-            
+
             if request.repo_url:
                 temp_repo_path = os.path.abspath(f"tmp_repos/{job_id}")
-                log.info("cloning_repository", repo_url=request.repo_url, temp_repo_path=temp_repo_path)
+                log.info("cloning_repository", repo_url=request.repo_url)
                 await clone_repository(request.repo_url, temp_repo_path)
                 project_path_to_scan = temp_repo_path
 
-            # Run pipeline
             result = await run_pipeline(
                 project_path=project_path_to_scan,
                 activo_id=request.activo_id,
@@ -224,10 +216,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 aone_client=None,
             )
 
-            # Build response
-            results_dict = _build_results(result, request=request)
-
-            # If repo was cloned, move to repos_cache instead of deleting
+            # Move repo to cache
             final_project_path = project_path_to_scan
             if temp_repo_path and os.path.exists(temp_repo_path):
                 import shutil
@@ -235,10 +224,16 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 os.makedirs(os.path.dirname(cache_dir), exist_ok=True)
                 shutil.move(temp_repo_path, cache_dir)
                 final_project_path = cache_dir
-                temp_repo_path = None  # Prevent cleanup in finally
+                temp_repo_path = None
                 log.info("repo_moved_to_cache", cache_path=cache_dir)
 
-            # Update DB to COMPLETED
+            # ── Build aggregated stats ────────────────────────────
+            results_dict = _build_results(result, request=request)
+            escaneo_data = results_dict["escaneo"]
+            archivos_data = results_dict["archivos_fuente"]
+            unidades_data = results_dict["unidades_logicas"]
+
+            # ── Update escaneo row ────────────────────────────────
             await repository.update_scan_job_status(
                 session,
                 job_id,
@@ -246,12 +241,94 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                 total_files=result.total_files,
                 processed_files=result.processed_files,
                 failed_files=result.failed_files if result.failed_files else None,
-                results=results_dict,
                 project_path=final_project_path,
             )
+
+            # ── Insert archivos_fuente ────────────────────────────
+            archivo_orm_map: dict[str, UUID] = {}  # nombre -> id
+            escaneado_en = datetime.now()
+            for a in archivos_data:
+                orm = await repository.create_archivo_fuente(
+                    session,
+                    escaneo_id=job_id,
+                    activo_id=request.activo_id,
+                    aplicacion_id=request.aplicacion_id,
+                    nombre=a["nombre"],
+                    ruta_archivo=a.get("ruta_archivo"),
+                    proposito=a.get("proposito"),
+                    capa=a.get("capa"),
+                    lenguaje=a.get("lenguaje"),
+                    total_funciones=a.get("total_funciones", 0),
+                    total_clases=a.get("total_clases", 0),
+                    endpoints=a.get("endpoints", 0),
+                    operaciones_bd=a.get("operaciones_bd", 0),
+                    llamadas_externas=a.get("llamadas_externas", 0),
+                    complejidad_ciclomatica=a.get("complejidad_ciclomatica"),
+                    lineas_codigo=a.get("lineas_codigo"),
+                    metadata=a.get("metadata"),
+                    commit_hash=a.get("commit_hash"),
+                    build_number=a.get("build_number"),
+                    escaneado_en=escaneado_en,
+                )
+                archivo_orm_map[a["nombre"]] = orm.id
+
+            # ── Insert unidades_logicas ───────────────────────────
+            # First pass: insert CLASEs, build class name -> id map
+            clase_id_map: dict[str, UUID] = {}
+            for u in unidades_data:
+                if u["tipo"] != "CLASE":
+                    continue
+                meta = u.get("metadata", {})
+                orm = await repository.create_unidad_logica(
+                    session,
+                    escaneo_id=job_id,
+                    activo_id=request.activo_id,
+                    aplicacion_id=request.aplicacion_id,
+                    archivo_id=archivo_orm_map.get(u["archivo"]),
+                    nombre=u["nombre"],
+                    tipo=u["tipo"],
+                    linea_inicio=u.get("linea_inicio"),
+                    linea_fin=u.get("linea_fin"),
+                    complejidad=u.get("complejidad"),
+                    lineas_codigo=u.get("lineas_codigo"),
+                    accede_bd=u.get("accede_bd", False),
+                    llamadas_externas=u.get("llamadas_externas", 0),
+                    docstring=u.get("docstring", False),
+                    overall_score=u.get("overall_score"),
+                    risk_level=u.get("risk_level"),
+                    metadata=meta,
+                )
+                clase_id_map[u["nombre"]] = orm.id
+
+            # Second pass: insert FUNCIONes with parent_id resolved
+            for u in unidades_data:
+                if u["tipo"] != "FUNCION":
+                    continue
+                meta = u.get("metadata", {})
+                parent_name = u.get("parent")
+                await repository.create_unidad_logica(
+                    session,
+                    escaneo_id=job_id,
+                    activo_id=request.activo_id,
+                    aplicacion_id=request.aplicacion_id,
+                    archivo_id=archivo_orm_map.get(u["archivo"]),
+                    parent_id=clase_id_map.get(parent_name) if parent_name else None,
+                    nombre=u["nombre"],
+                    tipo=u["tipo"],
+                    linea_inicio=u.get("linea_inicio"),
+                    linea_fin=u.get("linea_fin"),
+                    complejidad=u.get("complejidad"),
+                    lineas_codigo=u.get("lineas_codigo"),
+                    accede_bd=u.get("accede_bd", False),
+                    llamadas_externas=u.get("llamadas_externas", 0),
+                    docstring=u.get("docstring", False),
+                    overall_score=u.get("overall_score"),
+                    risk_level=u.get("risk_level"),
+                    metadata=meta,
+                )
+
             await session.commit()
 
-            # Sincronización a A-ONE DB
             sync_client = AOneSyncClient()
             try:
                 await sync_client.sync_scan_results(results_dict)
@@ -263,29 +340,23 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             log.info(
                 "background_scan_completed",
                 archivos=result.processed_files,
-                clases=results_dict["escaneo"]["clases_total"],
-                funciones=results_dict["escaneo"]["funciones_total"],
+                clases=escaneo_data["clases_total"],
+                funciones=escaneo_data["funciones_total"],
                 score=result.score_general,
-                riesgo=result.nivel_riesgo,
             )
-            
+
         except Exception as e:
             log.error("background_scan_failed", error=repr(e))
-            # Fallback update to FAILED if possible
             try:
                 await repository.update_scan_job_status(
-                    session,
-                    job_id,
-                    status="FAILED",
+                    session, job_id, status="FAILED",
                     failed_files=[{"archivo": "ALL", "error": str(e)}]
                 )
                 await session.commit()
             except Exception as e_inner:
                 log.error("background_scan_failed_to_update_status", error=str(e_inner))
         finally:
-            # Only cleanup if move to cache failed
             if temp_repo_path and os.path.exists(temp_repo_path):
-                log.info("cleaning_up_temporary_repository", temp_repo_path=temp_repo_path)
                 cleanup_repository(temp_repo_path)
 
 
@@ -371,6 +442,9 @@ async def get_scan_result(
     if not job:
         raise HTTPException(status_code=404, detail=f"Scan job not found: {job_id}")
 
+    archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
+    unidades_orm = await repository.get_unidades_by_escaneo(session, uuid_id)
+
     return {
         "job_id": str(job.id),
         "status": job.status,
@@ -378,8 +452,49 @@ async def get_scan_result(
         "project_path": job.project_path,
         "total_files": job.total_files,
         "processed_files": job.processed_files,
-        "results": job.results,
         "created_at": job.created_at,
+        "archivos_fuente": [
+            {
+                "id": str(a.id),
+                "nombre": a.nombre,
+                "ruta_archivo": a.ruta_archivo,
+                "capa": a.capa,
+                "lenguaje": a.lenguaje,
+                "proposito": a.proposito,
+                "total_funciones": a.total_funciones,
+                "total_clases": a.total_clases,
+                "endpoints": a.endpoints,
+                "operaciones_bd": a.operaciones_bd,
+                "llamadas_externas": a.llamadas_externas,
+                "complejidad_ciclomatica": a.complejidad_ciclomatica,
+                "lineas_codigo": a.lineas_codigo,
+                "metadata": a.meta,
+                "commit_hash": a.commit_hash,
+                "analisis_ia": a.analisis_ia,
+            }
+            for a in archivos_orm
+        ],
+        "unidades_logicas": [
+            {
+                "id": str(u.id),
+                "nombre": u.nombre,
+                "tipo": u.tipo,
+                "archivo_id": str(u.archivo_id) if u.archivo_id else None,
+                "parent_id": str(u.parent_id) if u.parent_id else None,
+                "linea_inicio": u.linea_inicio,
+                "linea_fin": u.linea_fin,
+                "complejidad": u.complejidad,
+                "lineas_codigo": u.lineas_codigo,
+                "accede_bd": u.accede_bd,
+                "llamadas_externas": u.llamadas_externas,
+                "docstring": u.docstring,
+                "overall_score": float(u.overall_score) if u.overall_score else None,
+                "risk_level": u.risk_level,
+                "metadata": u.meta,
+                "analisis_ia": u.analisis_ia,
+            }
+            for u in unidades_orm
+        ],
     }
 
 
@@ -531,103 +646,94 @@ async def enrich_scan_job(
 # ── Enrich-All (todas las funciones) ─────────────────────────────
 
 async def _run_enrich_all_background_task(job_id: UUID):
-    """Background task to enrich ALL functions of a scan (with context)."""
+    """Enrich ALL functions — UPDATE analisis_ia directly in unidades_logicas."""
     log = logger.bind(job_id=str(job_id), task="ai_enrich_all")
-    
+
     try:
         async with async_session_factory() as session:
             job = await repository.get_scan_job(session, job_id)
-            if not job or not job.results:
-                log.error("enrich_all_job_not_found_or_empty")
+            if not job:
+                log.error("enrich_all_job_not_found")
                 return
-            
+
             project_path = job.project_path
-            archivos_fuente = job.results.get("archivos_fuente", [])
-            mapa_archivos = {a.get("nombre"): a.get("ruta_archivo") for a in archivos_fuente}
-            
-            # ── Build ProjectContext for richer prompts ────────────
+            archivos_orm = await repository.get_archivos_by_escaneo(session, job_id)
+            unidades_orm = await repository.get_unidades_by_escaneo(session, job_id)
+
+            # Build context
+            archivos_data = [
+                {"nombre": a.nombre, "ruta_archivo": a.ruta_archivo,
+                 "lenguaje": a.lenguaje, "capa": a.capa, "lineas_codigo": a.lineas_codigo}
+                for a in archivos_orm
+            ]
             project_context = None
             if settings.enable_context_enrichment:
-                project_context = _rebuild_project_context(
-                    job.microservice_name or "unknown",
-                    archivos_fuente,
-                )
+                project_context = _rebuild_project_context(job.microservice_name or "unknown", archivos_data)
                 log.info("enrich_all_context_built", modules=len(project_context.manifest.modules))
-            
-            unidades = job.results.get("unidades_logicas", [])
+
+            mapa_archivos = {a.nombre: a.ruta_archivo for a in archivos_orm}
             payload_funciones = []
-            
-            for unit in unidades:
-                if unit.get("tipo") != "FUNCION":
-                    continue
-                if unit.get("analisis_ia"):
-                    continue  # Ya enriquecida, se salta
-                    
-                ruta_relativa = mapa_archivos.get(unit.get("archivo"))
+            unidades_pendientes = [u for u in unidades_orm if u.tipo == "FUNCION" and not u.analisis_ia]
+
+            for unit in unidades_pendientes:
+                ruta_relativa = mapa_archivos.get(unit.nombre) or next(
+                    (a.ruta_archivo for a in archivos_orm if a.id == unit.archivo_id), None
+                )
                 if not ruta_relativa:
                     continue
-                    
                 archivo_absoluto = os.path.join(project_path, ruta_relativa)
-                
                 try:
-                    with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
-                        lines = file_source.readlines()
-                        inicio = unit.get("linea_inicio", 1) - 1
-                        fin = unit.get("linea_fin", len(lines))
+                    with open(archivo_absoluto, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                        inicio = (unit.linea_inicio or 1) - 1
+                        fin = unit.linea_fin or len(lines)
                         codigo_original = "".join(lines[inicio:fin])
-                        
-                        # Build context block for this function's file
-                        context_block = ""
-                        if project_context:
-                            file_ctx = project_context.file_contexts.get(ruta_relativa)
-                            context_block = _build_context_block(
-                                project_context.manifest, file_ctx
-                            )
-                        
-                        esquema_clase = unit.get("parent") or "Standalone"
-                        if context_block:
-                            esquema_clase = f"{context_block}\n\nClase/Componente: {esquema_clase}"
-                        
-                        payload_funciones.append({
-                            "nombre_funcion": unit.get("nombre"),
-                            "componente": esquema_clase,
-                            "archivo": ruta_relativa,
-                            "lineas": f"{inicio+1}-{fin}",
-                            "codigo_original": codigo_original
-                        })
+
+                    context_block = ""
+                    if project_context:
+                        file_ctx = project_context.file_contexts.get(ruta_relativa)
+                        context_block = _build_context_block(project_context.manifest, file_ctx)
+
+                    esquema_clase = unit.nombre
+                    if context_block:
+                        esquema_clase = f"{context_block}\n\nClase/Componente: {esquema_clase}"
+
+                    payload_funciones.append({
+                        "_unidad_id": str(unit.id),
+                        "nombre_funcion": unit.nombre,
+                        "componente": esquema_clase,
+                        "archivo": ruta_relativa,
+                        "codigo_original": codigo_original,
+                    })
                 except Exception as e:
                     log.warning("enrich_all_file_read_error", file=archivo_absoluto, error=str(e))
-                    continue
-                    
+
             if not payload_funciones:
                 log.warning("enrich_all_no_functions_to_enrich")
                 return
-                
-            log.info("enrich_all_calling_bedrock", functions=len(payload_funciones))
-            resultados_ia = await llm_enricher.analyze_functions_batch(payload_funciones)
-            
-            ia_lookup = {(r.get("nombre_funcion"), r.get("archivo")): r.get("analisis_ia") for r in resultados_ia}
-            
-            for unit in unidades:
-                ruta_rel = mapa_archivos.get(unit.get("archivo"))
-                key = (unit.get("nombre"), ruta_rel)
-                if key in ia_lookup:
-                    unit["analisis_ia"] = ia_lookup[key]
 
-            await repository.update_scan_job_status(
-                session, job_id, status=job.status, results=job.results
-            )
+            resultados_ia = await llm_enricher.analyze_functions_batch(payload_funciones)
+
+            # UPDATE each unidad directly
+            for idx, res in enumerate(resultados_ia):
+                unidad_id_str = payload_funciones[idx].get("_unidad_id")
+                if unidad_id_str and res.get("analisis_ia"):
+                    await repository.update_unidad_analisis_ia(
+                        session, UUID(unidad_id_str), res["analisis_ia"]
+                    )
+                    reglas = res["analisis_ia"].get("reglas_de_negocio") or []
+                    if reglas:
+                        unidad = next((u for u in unidades_orm if str(u.id) == unidad_id_str), None)
+                        if unidad:
+                            await repository.create_reglas_negocio(
+                                session,
+                                unidad_logica_id=unidad.id,
+                                activo_id=unidad.activo_id,
+                                aplicacion_id=unidad.aplicacion_id,
+                                reglas=reglas,
+                            )
+
             await session.commit()
-            
-            # Sincronización a A-ONE DB
-            sync_client = AOneSyncClient()
-            try:
-                await sync_client.sync_scan_results(job.results)
-            except Exception as sync_e:
-                log.error("aone_sync_failed_enrich_all", error=repr(sync_e))
-            finally:
-                await sync_client.close()
-                
             log.info("enrich_all_completed", enriched=len(resultados_ia))
 
     except Exception as e:
@@ -658,106 +764,86 @@ async def enrich_all_functions(
         raise HTTPException(status_code=400, detail="Scan job must be COMPLETED before enrichment.")
 
     background_tasks.add_task(_run_enrich_all_background_task, uuid_id)
-    
-    total_functions = len([u for u in (job.results or {}).get("unidades_logicas", []) if u.get("tipo") == "FUNCION"])
+
+    unidades_orm = await repository.get_unidades_by_escaneo(session, uuid_id)
+    total_functions = sum(1 for u in unidades_orm if u.tipo == "FUNCION")
     return {"message": f"Enrich-all queued for {total_functions} functions", "job_id": job_id}
 
 
 # ── Enrich-Files (todos los archivos) ────────────────────────────
 
 async def _run_enrich_files_background_task(job_id: UUID):
-    """Background task to enrich ALL files of a scan with file-level AI analysis (context-aware)."""
+    """Enrich ALL files — UPDATE analisis_ia directly in archivos_fuente."""
     log = logger.bind(job_id=str(job_id), task="ai_enrich_files")
-    
+
     try:
         async with async_session_factory() as session:
             job = await repository.get_scan_job(session, job_id)
-            if not job or not job.results:
-                log.error("enrich_files_job_not_found_or_empty")
+            if not job:
+                log.error("enrich_files_job_not_found")
                 return
-            
-            project_path = job.project_path
-            archivos_fuente = job.results.get("archivos_fuente", [])
 
-            # ── Build ProjectContext for richer prompts ────────────
+            project_path = job.project_path
+            archivos_orm = await repository.get_archivos_by_escaneo(session, job_id)
+
+            archivos_data = [
+                {"nombre": a.nombre, "ruta_archivo": a.ruta_archivo,
+                 "lenguaje": a.lenguaje, "capa": a.capa, "lineas_codigo": a.lineas_codigo}
+                for a in archivos_orm
+            ]
             project_context = None
             if settings.enable_context_enrichment:
-                project_context = _rebuild_project_context(
-                    job.microservice_name or "unknown",
-                    archivos_fuente,
-                )
+                project_context = _rebuild_project_context(job.microservice_name or "unknown", archivos_data)
                 log.info("enrich_files_context_built", modules=len(project_context.manifest.modules))
 
             payload_archivos = []
-            
-            for archivo in archivos_fuente:
-                if archivo.get("analisis_ia"):
-                    continue  # Ya enriquecido, se salta
-                    
-                ruta_relativa = archivo.get("ruta_archivo")
+            archivos_pendientes = [a for a in archivos_orm if not a.analisis_ia]
+
+            for archivo in archivos_pendientes:
+                ruta_relativa = archivo.ruta_archivo
                 if not ruta_relativa:
                     continue
-                    
                 archivo_absoluto = os.path.join(project_path, ruta_relativa)
-                
                 try:
-                    with open(archivo_absoluto, "r", encoding="utf-8") as file_source:
-                        codigo_completo = file_source.read()
-                        
-                        # Build context block for this file
-                        context_block = ""
-                        if project_context:
-                            file_ctx = project_context.file_contexts.get(ruta_relativa)
-                            context_block = _build_context_block(
-                                project_context.manifest, file_ctx
-                            )
-                        
-                        payload_archivos.append({
-                            "nombre_archivo": archivo.get("nombre"),
-                            "ruta_archivo": ruta_relativa,
-                            "lenguaje": archivo.get("lenguaje", "Desconocido"),
-                            "capa": archivo.get("capa", "Sin clasificar"),
-                            "codigo_completo": codigo_completo,
-                            "contexto_proyecto": context_block,
-                        })
+                    with open(archivo_absoluto, "r", encoding="utf-8") as f:
+                        codigo_completo = f.read()
+
+                    context_block = ""
+                    if project_context:
+                        file_ctx = project_context.file_contexts.get(ruta_relativa)
+                        context_block = _build_context_block(project_context.manifest, file_ctx)
+
+                    payload_archivos.append({
+                        "_archivo_id": str(archivo.id),
+                        "nombre_archivo": archivo.nombre,
+                        "ruta_archivo": ruta_relativa,
+                        "lenguaje": archivo.lenguaje or "Desconocido",
+                        "capa": archivo.capa or "Sin clasificar",
+                        "codigo_completo": codigo_completo,
+                        "contexto_proyecto": context_block,
+                    })
                 except Exception as e:
                     log.warning("enrich_files_read_error", file=archivo_absoluto, error=str(e))
-                    continue
-                    
+
             if not payload_archivos:
                 log.warning("enrich_files_no_files_to_enrich")
                 return
-                
-            # Use context-aware enricher if context is available
+
             has_context = any(p.get("contexto_proyecto") for p in payload_archivos)
             if has_context:
-                log.info("enrich_files_calling_bedrock_with_context", files=len(payload_archivos))
                 resultados_ia = await llm_enricher.analyze_files_batch_with_context(payload_archivos)
             else:
-                log.info("enrich_files_calling_bedrock", files=len(payload_archivos))
                 resultados_ia = await llm_enricher.analyze_files_batch(payload_archivos)
-            
-            ia_lookup = {r.get("nombre_archivo"): r.get("analisis_ia") for r in resultados_ia}
-            
-            for archivo in archivos_fuente:
-                nombre = archivo.get("nombre")
-                if nombre in ia_lookup:
-                    archivo["analisis_ia"] = ia_lookup[nombre]
 
-            await repository.update_scan_job_status(
-                session, job_id, status=job.status, results=job.results
-            )
+            # UPDATE each archivo directly
+            for idx, res in enumerate(resultados_ia):
+                archivo_id_str = payload_archivos[idx].get("_archivo_id")
+                if archivo_id_str and res.get("analisis_ia"):
+                    await repository.update_archivo_analisis_ia(
+                        session, UUID(archivo_id_str), res["analisis_ia"]
+                    )
+
             await session.commit()
-
-            # Sincronización a A-ONE DB
-            sync_client = AOneSyncClient()
-            try:
-                await sync_client.sync_scan_results(job.results)
-            except Exception as sync_e:
-                log.error("aone_sync_failed_enrich_files", error=repr(sync_e))
-            finally:
-                await sync_client.close()
-
             log.info("enrich_files_completed", enriched=len(resultados_ia))
 
     except Exception as e:
@@ -788,8 +874,9 @@ async def enrich_all_files(
         raise HTTPException(status_code=400, detail="Scan job must be COMPLETED before enrichment.")
 
     background_tasks.add_task(_run_enrich_files_background_task, uuid_id)
-    
-    total_files = len((job.results or {}).get("archivos_fuente", []))
+
+    archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
+    total_files = len(archivos_orm)
     return {"message": f"Enrich-files queued for {total_files} files", "job_id": job_id}
 
 
