@@ -30,9 +30,7 @@ def _get_cache():
 
 # Configuración AWS Bedrock
 REGION = "us-east-1"
-# Modelo recomendado para costos bajos y velocidad
-MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0" 
-PROFILE_NAME = "AmazonBedrockLimitedAccess-460896925620"
+MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0"
 
 PROMPT_TACTICO = """
 Eres un Arquitecto de Software Experto especializado en ingeniería inversa. 
@@ -90,12 +88,13 @@ INSTRUCCIONES: Analiza el archivo completo y devuelve EXACTAMENTE este formato J
 """
 
 def get_bedrock_client():
-    """Inicializa la sesión de Boto3 con las credenciales mapeadas del perfil."""
+    """Inicializa boto3 usando profile si está configurado, sino usa variables de entorno."""
+    from src.config import settings
     try:
-        session = boto3.Session(profile_name=PROFILE_NAME)
+        session = boto3.Session(profile_name=settings.aws_profile) if settings.aws_profile else boto3.Session()
         return session.client('bedrock-runtime', region_name=REGION)
     except Exception as e:
-        logger.error("error_initializing_bedrock", error=str(e), profile=PROFILE_NAME)
+        logger.error("error_initializing_bedrock", error=str(e), profile=settings.aws_profile)
         raise
 
 def _safe_parse_json(text: str, context_name: str = "") -> dict:

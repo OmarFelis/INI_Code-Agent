@@ -76,6 +76,10 @@ class AOneSyncClient:
         Main orchestration function.
         Sends `escaneo`, `archivos`, `unidades` and `reglas_negocio` to A-ONE APIs in order.
         """
+        if getattr(settings, "aone_sync_mode", "remote").lower() == "local":
+            log.info("aone_sync_skipped", reason="AONE_SYNC_MODE=local")
+            return True
+
         escaneo_data = job_results.get("escaneo", {})
         archivos_data = job_results.get("archivos_fuente", [])
         unidades_data = job_results.get("unidades_logicas", [])

@@ -14,7 +14,7 @@ services:
       POSTGRES_USER: codeagent
       POSTGRES_PASSWORD: codeagent
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -34,16 +34,22 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://codeagent:codeagent@db:5432/codeagent_db
       LOG_LEVEL: INFO
+      API_SECRET_TOKEN: local-dev-token
+      AONE_SYNC_MODE: local
+      ALLOWED_GIT_DOMAINS: bitbucket.org,github.com,gitlab.com
+      GIT_USERNAME: "${GIT_USERNAME}"
+      GIT_TOKEN: "${GIT_TOKEN}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN}"
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      # Mount source for hot-reload during development
       - ./src:/app/src
-      # Mount entire C:/ drive as read-only so any repo can be scanned
-      # Example: C:\mvpRBAMOTORBACK → /host/mvpRBAMOTORBACK
-      - C:/:/host:ro
-    restart: unless-stopped
+      - repos_cache:/app/repos_cache
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   pgdata:
+  repos_cache:

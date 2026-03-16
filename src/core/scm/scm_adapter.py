@@ -19,51 +19,42 @@ def _remove_readonly(func, path, excinfo):
 
 async def clone_repository(repo_url: str, dest_dir: str) -> str:
     """
-    Asynchronously clones a Git repository to dest_dir.
-    If GIT_USERNAME and GIT_TOKEN are set, injects them into the URL for basic auth.
+    Asynchronously clones a Git repository to dest_dir using SSH.
+    Converts HTTPS Bitbucket URLs to SSH format automatically.
     """
     log = logger.bind(repo_url=repo_url, dest_dir=dest_dir)
     log.info("clone_repository_started")
 
-    # Inyectar username en la URL si existe
+    # Convertir HTTPS a SSH para Bitbucket
     final_url = repo_url
-    if settings.git_username:
-        try:
-            parsed = urlparse(repo_url)
-            if not parsed.username:
-                final_url = f"{parsed.scheme}://{settings.git_username}@{parsed.netloc}{parsed.path}"
-        except Exception as e:
-            log.warning("error_injecting_git_credentials", error=str(e))
-            final_url = repo_url
+    if "bitbucket.org" in repo_url and repo_url.startswith("https://"):
+        parsed = urlparse(repo_url)
+        workspace_repo = parsed.path.lstrip("/")
+        final_url = f"git@bitbucket.org:{workspace_repo}"
+        if not final_url.endswith(".git"):
+            final_url += ".git"
 
-    # Resolver ejecutable de git (importante en Windows para asyncio)
+    # Resolver ejecutable de git
     git_exec = shutil.which("git")
     if not git_exec:
         raise RuntimeError("Git executable not found in system PATH.")
 
-    # Construir el comando: username en la URL + Git Credential Manager del SO se encarga del password
     cmd = [git_exec, "clone", "--depth", "1", final_url, dest_dir]
+    log.info("git_clone_executing", command_safe=f"git clone --depth 1 {final_url} {dest_dir}")
 
-    log.info("git_clone_executing", command_safe=f"git clone --depth 1 {parsed.scheme}://{settings.git_username or ''}@***/{parsed.path} {dest_dir}")
-
-    # Ejecutar el subproceso usando to_thread para evitar NotImplementedError en Windows
     def _run_git():
         return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            env={**os.environ, "GIT_SSH_COMMAND": "ssh -i /tmp/id_ed25519 -o StrictHostKeyChecking=no"}
         )
 
     process_result = await asyncio.to_thread(_run_git)
 
     if process_result.returncode != 0:
         error_msg = process_result.stderr.strip()
-        
-        # Enmascarar token en el log si existe en el error
-        if settings.git_token and settings.git_token in error_msg:
-            error_msg = error_msg.replace(settings.git_token, "***TOKEN***")
-            
         log.error("git_clone_failed", return_code=process_result.returncode, error=error_msg)
         raise RuntimeError(f"Git clone failed: {error_msg}")
 

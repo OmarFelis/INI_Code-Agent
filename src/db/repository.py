@@ -1,5 +1,5 @@
 """
-Code-Agent — Data access layer for scan_jobs.
+Code-Agent — Data access layer for infra.escaneos.
 """
 
 import uuid
@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import ScanJobORM
+from src.db.models import EscaneoORM
 
 
 async def create_scan_job(
@@ -20,9 +20,9 @@ async def create_scan_job(
     project_path: str | None = None,
     branch: str | None = None,
     batch_id: str | None = None,
-) -> ScanJobORM:
-    """Create a new scan job with status QUEUED."""
-    job = ScanJobORM(
+) -> EscaneoORM:
+    """Create a new escaneo with status QUEUED."""
+    job = EscaneoORM(
         activo_id=activo_id,
         aplicacion_id=aplicacion_id,
         microservice_name=microservice_name,
@@ -36,10 +36,10 @@ async def create_scan_job(
     return job
 
 
-async def get_scan_job(session: AsyncSession, job_id: uuid.UUID) -> ScanJobORM | None:
-    """Get a scan job by ID."""
+async def get_scan_job(session: AsyncSession, job_id: uuid.UUID) -> EscaneoORM | None:
+    """Get an escaneo by ID."""
     result = await session.execute(
-        select(ScanJobORM).where(ScanJobORM.id == job_id)
+        select(EscaneoORM).where(EscaneoORM.id == job_id)
     )
     return result.scalar_one_or_none()
 
@@ -81,7 +81,7 @@ async def update_scan_job_status(
         values["project_path"] = project_path
 
     await session.execute(
-        update(ScanJobORM).where(ScanJobORM.id == job_id).values(**values)
+        update(EscaneoORM).where(EscaneoORM.id == job_id).values(**values)
     )
 
 
@@ -90,11 +90,11 @@ async def list_scan_jobs(
     *,
     activo_id: str | None = None,
     limit: int = 20,
-) -> list[ScanJobORM]:
-    """List scan jobs, optionally filtered by activo_id."""
-    query = select(ScanJobORM).order_by(ScanJobORM.created_at.desc()).limit(limit)
+) -> list[EscaneoORM]:
+    """List escaneos, optionally filtered by activo_id."""
+    query = select(EscaneoORM).order_by(EscaneoORM.created_at.desc()).limit(limit)
     if activo_id:
-        query = query.where(ScanJobORM.activo_id == activo_id)
+        query = query.where(EscaneoORM.activo_id == activo_id)
     result = await session.execute(query)
     return list(result.scalars().all())
 
@@ -102,12 +102,12 @@ async def list_scan_jobs(
 async def list_batch_jobs(
     session: AsyncSession,
     batch_id: str,
-) -> list[ScanJobORM]:
-    """List all scan jobs belonging to a batch."""
+) -> list[EscaneoORM]:
+    """List all escaneos belonging to a batch."""
     result = await session.execute(
-        select(ScanJobORM)
-        .where(ScanJobORM.batch_id == batch_id)
-        .order_by(ScanJobORM.created_at.asc())
+        select(EscaneoORM)
+        .where(EscaneoORM.batch_id == batch_id)
+        .order_by(EscaneoORM.created_at.asc())
     )
     return list(result.scalars().all())
 

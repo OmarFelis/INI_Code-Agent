@@ -9,6 +9,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project definition and install dependencies

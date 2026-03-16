@@ -21,6 +21,10 @@ class Settings(BaseSettings):
         default="https://lrxgmddycqvq3ql6vqgct3p5za0ityil.lambda-url.us-east-1.on.aws/alignetone_dev_v2",
         description="A-ONE backend base URL for entity endpoints",
     )
+    aone_sync_mode: str = Field(
+        default="remote",
+        description="'local' to skip A-ONE sync, 'remote' to enable it",
+    )
 
     # --- AWS ---
     aws_default_region: str = Field(default="us-east-1")
