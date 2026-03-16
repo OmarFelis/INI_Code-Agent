@@ -314,6 +314,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
             # ── Insert unidades_logicas ───────────────────────────
             # First pass: insert CLASEs, build class name -> id map
             clase_id_map: dict[str, UUID] = {}
+            unidad_sync_list = []  # para A-ONE sync con IDs reales
             for u in unidades_data:
                 if u["tipo"] != "CLASE":
                     continue
@@ -338,6 +339,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                     metadata=meta,
                 )
                 clase_id_map[u["nombre"]] = orm.id
+                unidad_sync_list.append({**u, "id": str(orm.id), "escaneo_id": str(job_id)})
 
             # Second pass: insert FUNCIONes with parent_id resolved
             for u in unidades_data:
@@ -345,7 +347,7 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                     continue
                 meta = u.get("metadata", {})
                 parent_name = u.get("parent")
-                await repository.create_unidad_logica(
+                orm = await repository.create_unidad_logica(
                     session,
                     escaneo_id=job_id,
                     activo_id=request.activo_id,
@@ -365,12 +367,14 @@ async def _run_scan_background_task(job_id: UUID, request: ScanRequest):
                     risk_level=u.get("risk_level"),
                     metadata=meta,
                 )
+                unidad_sync_list.append({**u, "id": str(orm.id), "escaneo_id": str(job_id)})
 
             await session.commit()
 
             # ── Inject IDs reales para evitar duplicados en A-ONE ─
             results_dict["escaneo"]["id"] = str(job_id)
             results_dict["archivos_fuente"] = archivo_sync_list
+            results_dict["unidades_logicas"] = unidad_sync_list
 
             sync_client = AOneSyncClient()
             try:
