@@ -770,7 +770,7 @@ async def _run_enrich_all_background_task(job_id: UUID):
             # UPDATE each unidad directly
             for idx, res in enumerate(resultados_ia):
                 unidad_id_str = payload_funciones[idx].get("_unidad_id")
-                if unidad_id_str and res.get("analisis_ia"):
+                if unidad_id_str and isinstance(res, dict) and res.get("analisis_ia"):
                     await repository.update_unidad_analisis_ia(
                         session, UUID(unidad_id_str), res["analisis_ia"]
                     )
@@ -794,7 +794,7 @@ async def _run_enrich_all_background_task(job_id: UUID):
             reglas_orm = []
             for idx, res in enumerate(resultados_ia):
                 unidad_id_str = payload_funciones[idx].get("_unidad_id")
-                if unidad_id_str and res and res.get("analisis_ia"):
+                if unidad_id_str and isinstance(res, dict) and res.get("analisis_ia"):
                     reglas = res["analisis_ia"].get("reglas_de_negocio") or []
                     unidad = next((u for u in unidades_orm if str(u.id) == unidad_id_str), None)
                     if unidad and reglas:
@@ -811,18 +811,39 @@ async def _run_enrich_all_background_task(job_id: UUID):
                                 "creado_por_ia": True,
                                 "activo": True,
                             })
-            if reglas_orm:
-                sync_client = AOneSyncClient()
-                try:
+            # Sync analisis_ia de unidades a A-ONE (campos mínimos requeridos + analisis_ia)
+            unidades_ia_patch = []
+            for idx, res in enumerate(resultados_ia):
+                unidad_id_str = payload_funciones[idx].get("_unidad_id")
+                if unidad_id_str and isinstance(res, dict) and res.get("analisis_ia"):
+                    unidad = next((u for u in unidades_orm if str(u.id) == unidad_id_str), None)
+                    if unidad:
+                        unidades_ia_patch.append({
+                            "id": unidad_id_str,
+                            "escaneo_id": str(job_id),
+                            "activo_id": str(unidad.activo_id),
+                            "aplicacion_id": str(unidad.aplicacion_id),
+                            "nombre": unidad.nombre,
+                            "tipo": unidad.tipo,
+                            "analisis_ia": res["analisis_ia"],
+                        })
+
+            sync_client = AOneSyncClient()
+            try:
+                if unidades_ia_patch:
+                    await sync_client._put_many("entities/unidades_logicas", unidades_ia_patch)
+                    log.info("enrich_all_unidades_ia_synced", count=len(unidades_ia_patch))
+                if reglas_orm:
                     await sync_client._post_upsert_many("entities/reglas_negocio", reglas_orm)
                     log.info("enrich_all_reglas_synced", count=len(reglas_orm))
-                except Exception as sync_e:
-                    log.error("enrich_all_reglas_sync_failed", error=repr(sync_e))
-                finally:
-                    await sync_client.close()
+            except Exception as sync_e:
+                log.error("enrich_all_sync_failed", error=repr(sync_e))
+            finally:
+                await sync_client.close()
 
     except Exception as e:
-        log.error("enrich_all_failed", error=repr(e))
+        import traceback
+        log.error("enrich_all_failed", error=repr(e), traceback=traceback.format_exc())
 
 
 @router.post(
@@ -931,6 +952,49 @@ async def _run_enrich_files_background_task(job_id: UUID):
             await session.commit()
             log.info("enrich_files_completed", enriched=len(resultados_ia))
 
+            # ── Sync analisis_ia de archivos a A-ONE ──────────────
+            import json as _json
+            now_str = datetime.now(timezone.utc).isoformat()
+            archivos_actualizados = []
+            for idx, res in enumerate(resultados_ia):
+                archivo_id_str = payload_archivos[idx].get("_archivo_id")
+                if archivo_id_str and res.get("analisis_ia"):
+                    archivo = next((a for a in archivos_orm if str(a.id) == archivo_id_str), None)
+                    if archivo:
+                        archivos_actualizados.append({
+                            "id": archivo_id_str,
+                            "escaneo_id": str(job_id),
+                            "activo_id": str(archivo.activo_id),
+                            "aplicacion_id": str(archivo.aplicacion_id),
+                            "nombre": archivo.nombre,
+                            "ruta_archivo": archivo.ruta_archivo,
+                            "proposito": archivo.proposito,
+                            "capa": archivo.capa,
+                            "lenguaje": archivo.lenguaje,
+                            "total_funciones": archivo.total_funciones,
+                            "total_clases": archivo.total_clases,
+                            "endpoints": archivo.endpoints,
+                            "operaciones_bd": archivo.operaciones_bd,
+                            "llamadas_externas": archivo.llamadas_externas,
+                            "complejidad_ciclomatica": archivo.complejidad_ciclomatica,
+                            "lineas_codigo": archivo.lineas_codigo,
+                            "metadata": archivo.meta,
+                            "commit_hash": archivo.commit_hash,
+                            "escaneado": True,
+                            "activo": True,
+                            "analisis_ia": res["analisis_ia"],
+                            "created_at": now_str,
+                        })
+            if archivos_actualizados:
+                sync_client = AOneSyncClient()
+                try:
+                    await sync_client._put_many("entities/archivos_fuente", archivos_actualizados)
+                    log.info("enrich_files_aone_synced", count=len(archivos_actualizados))
+                except Exception as sync_e:
+                    log.error("enrich_files_aone_sync_failed", error=repr(sync_e))
+                finally:
+                    await sync_client.close()
+
     except Exception as e:
         log.error("enrich_files_failed", error=repr(e))
 
@@ -963,6 +1027,139 @@ async def enrich_all_files(
     archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
     total_files = len(archivos_orm)
     return {"message": f"Enrich-files queued for {total_files} files", "job_id": job_id}
+
+
+@router.post(
+    "/{job_id}/sync-aone",
+    summary="Sync local scan data to A-ONE via PUT",
+    description="Pushes existing local analisis_ia to A-ONE updating records in place without re-running AI.",
+)
+async def sync_to_aone(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Push local analisis_ia to A-ONE via PUT."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    job = await repository.get_scan_job(session, uuid_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Scan job not found: {job_id}")
+
+    archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
+    unidades_orm = await repository.get_unidades_by_escaneo(session, uuid_id)
+
+    unidades_payload = [
+        {
+            "id": str(u.id),
+            "escaneo_id": str(job_id),
+            "activo_id": str(u.activo_id),
+            "aplicacion_id": str(u.aplicacion_id),
+            "nombre": u.nombre,
+            "tipo": u.tipo,
+            "analisis_ia": u.analisis_ia,
+        }
+        for u in unidades_orm if u.analisis_ia
+    ]
+
+    archivos_payload = [
+        {
+            "id": str(a.id),
+            "escaneo_id": str(job_id),
+            "activo_id": str(a.activo_id),
+            "aplicacion_id": str(a.aplicacion_id),
+            "nombre": a.nombre,
+            "analisis_ia": a.analisis_ia,
+        }
+        for a in archivos_orm if a.analisis_ia
+    ]
+
+    sync_client = AOneSyncClient()
+    try:
+        await sync_client._put_many("entities/unidades_logicas", unidades_payload)
+        await sync_client._put_many("entities/archivos_fuente", archivos_payload)
+    finally:
+        await sync_client.close()
+
+    return {
+        "job_id": job_id,
+        "unidades_sincronizadas": len(unidades_payload),
+        "archivos_sincronizados": len(archivos_payload),
+    }
+
+
+@router.post(
+    "/{job_id}/reset-analisis-ia",
+    summary="Reset analisis_ia in local DB",
+    description="Clears analisis_ia from unidades_logicas and archivos_fuente locally so enrich-all/enrich-files can re-run and update A-ONE via PUT.",
+)
+async def reset_analisis_ia(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Clear analisis_ia locally to allow re-enrichment."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
+    unidades_orm = await repository.get_unidades_by_escaneo(session, uuid_id)
+
+    for a in archivos_orm:
+        await repository.update_archivo_analisis_ia(session, a.id, None)
+    for u in unidades_orm:
+        await repository.update_unidad_analisis_ia(session, u.id, None)
+
+    await session.commit()
+
+    return {
+        "job_id": job_id,
+        "archivos_reseteados": len(archivos_orm),
+        "unidades_reseteadas": len(unidades_orm),
+    }
+
+
+@router.delete(
+    "/{job_id}/aone",
+    summary="Delete scan data from A-ONE",
+    description="Deletes all records in A-ONE (reglas, unidades, archivos, escaneo) for a given job_id.",
+)
+async def delete_scan_from_aone(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete all A-ONE records associated with a scan job."""
+    try:
+        uuid_id = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id format — expected UUID")
+
+    archivos_orm = await repository.get_archivos_by_escaneo(session, uuid_id)
+    unidades_orm = await repository.get_unidades_by_escaneo(session, uuid_id)
+
+    unidad_ids = [str(u.id) for u in unidades_orm]
+    archivo_ids = [str(a.id) for a in archivos_orm]
+
+    sync_client = AOneSyncClient()
+    try:
+        # Orden: reglas → unidades → archivos → escaneo
+        reglas_deleted = await sync_client._delete_many("entities/reglas_negocio", unidad_ids)
+        unidades_deleted = await sync_client._delete_many("entities/unidades_logicas", unidad_ids)
+        archivos_deleted = await sync_client._delete_many("entities/archivos_fuente", archivo_ids)
+        escaneo_deleted = await sync_client._delete("entities/escaneos", job_id)
+    finally:
+        await sync_client.close()
+
+    return {
+        "job_id": job_id,
+        "reglas_deleted": reglas_deleted,
+        "unidades_deleted": unidades_deleted,
+        "archivos_deleted": archivos_deleted,
+        "escaneo_deleted": escaneo_deleted,
+    }
 
 
 # ── Helper: Rebuild ProjectContext from stored scan results ──────

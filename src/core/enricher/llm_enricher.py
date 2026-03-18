@@ -165,7 +165,7 @@ async def bedrock_llm_call(prompt: str, function_name: str, max_tokens: int = 10
     if settings.enable_llm_cache:
         cache = _get_cache()
         cached = cache.get(prompt)
-        if cached:
+        if cached and isinstance(cached, dict) and "error" not in cached:
             logger.debug("llm_cache_hit", function=function_name)
             return cached
 

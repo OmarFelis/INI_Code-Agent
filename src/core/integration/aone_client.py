@@ -29,22 +29,85 @@ class AOneSyncClient:
             "Prefer": "resolution=merge-duplicates"
         }
 
+    async def _delete(self, endpoint: str, record_id: str) -> bool:
+        """DELETE a record by ID in A-ONE."""
+        url = f"{self.base_url}/{endpoint}/{record_id}"
+        try:
+            response = await self.client.delete(url, headers={"Content-Type": "application/json"})
+            if response.status_code in [200, 204]:
+                return True
+            log.warning("aone_delete_unexpected_status", url=url, status=response.status_code, body=response.text)
+            return False
+        except Exception as e:
+            log.error("aone_delete_error", url=url, error=str(e))
+            return False
+
+    async def _delete_many(self, endpoint: str, ids: list[str], concurrency: int = 15) -> int:
+        """DELETE multiple records concurrently. Returns count of successful deletes."""
+        if not ids:
+            return 0
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _del(record_id):
+            async with semaphore:
+                return await self._delete(endpoint, record_id)
+
+        results = await asyncio.gather(*[_del(i) for i in ids], return_exceptions=True)
+        return sum(1 for r in results if r is True)
+
+    async def _put(self, endpoint: str, record_id: str, payload: dict) -> bool:
+        """PUT to update an existing record by ID."""
+        url = f"{self.base_url}/{endpoint}/{record_id}"
+        try:
+            response = await self.client.put(url, json=payload, headers={"Content-Type": "application/json"})
+            if response.status_code in [200, 201, 204]:
+                return True
+            log.warning("aone_put_unexpected_status", url=url, status=response.status_code, body=response.text)
+            return False
+        except Exception as e:
+            log.error("aone_put_error", url=url, error=str(e))
+            return False
+
+    async def _put_many(self, endpoint: str, items: list[dict], concurrency: int = 15) -> bool:
+        """PUT multiple records concurrently. Each item must have 'id'."""
+        if not items:
+            return True
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _put_single(item):
+            record_id = item.get("id")
+            if not record_id:
+                return False
+            async with semaphore:
+                return await self._put(endpoint, record_id, item)
+
+        results = await asyncio.gather(*[_put_single(item) for item in items], return_exceptions=True)
+        return all(isinstance(r, bool) and r for r in results)
+
     async def _post_upsert(self, endpoint: str, payload: dict | list) -> bool:
-        """Helper to send POST with Upsert headers to a specific endpoint."""
+        """Helper to send POST. If 409 (already exists), DELETE + POST to update."""
         url = f"{self.base_url}/{endpoint}"
         
         try:
-            response = await self.client.post(
-                url, 
-                json=payload, 
-                headers=self._get_headers()
-            )
-            response.raise_for_status()
+            response = await self.client.post(url, json=payload, headers=self._get_headers())
             
-            # PostgREST usually returns 201 Created or 200 OK
             if response.status_code in [200, 201, 204]:
                 return True
-                
+
+            # A-ONE Lambda no soporta merge-duplicates — si ya existe, DELETE + POST
+            if response.status_code == 409 and isinstance(payload, dict) and payload.get("id"):
+                record_id = payload["id"]
+                delete_url = f"{url}/{record_id}"
+                del_response = await self.client.delete(delete_url, headers={"Content-Type": "application/json"})
+                if del_response.status_code in [200, 204]:
+                    retry = await self.client.post(url, json=payload, headers=self._get_headers())
+                    if retry.status_code in [200, 201, 204]:
+                        return True
+                    log.error("aone_sync_retry_failed", url=url, status=retry.status_code, response=retry.text)
+                    return False
+                log.error("aone_sync_delete_failed", url=delete_url, status=del_response.status_code)
+                return False
+
             log.warning("aone_sync_unexpected_status", url=url, status=response.status_code, body=response.text)
             return False
             

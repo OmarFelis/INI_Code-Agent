@@ -192,7 +192,7 @@ async def create_archivo_fuente(
 async def update_archivo_analisis_ia(
     session: AsyncSession,
     archivo_id: uuid.UUID,
-    analisis_ia: dict,
+    analisis_ia: dict | None,
 ) -> None:
     await session.execute(
         update(ArchivoFuenteORM)
@@ -261,7 +261,7 @@ async def create_unidad_logica(
 async def update_unidad_analisis_ia(
     session: AsyncSession,
     unidad_id: uuid.UUID,
-    analisis_ia: dict,
+    analisis_ia: dict | None,
 ) -> None:
     await session.execute(
         update(UnidadLogicaORM)
@@ -291,7 +291,14 @@ async def create_reglas_negocio(
     reglas: list[dict],
 ) -> None:
     for regla in reglas:
-        descripcion = regla.get("descripcion") or ""
+        if isinstance(regla, str):
+            descripcion = regla
+            codigo = None
+        else:
+            descripcion = regla.get("descripcion") or ""
+            codigo = regla.get("codigo_relacionado")
+            if isinstance(codigo, list):
+                codigo = "\n".join(str(c) for c in codigo)
         if not descripcion:
             continue
         session.add(ReglaNegocioORM(
@@ -299,7 +306,7 @@ async def create_reglas_negocio(
             activo_id=activo_id,
             aplicacion_id=aplicacion_id,
             descripcion=descripcion,
-            codigo_relacionado=regla.get("codigo_relacionado"),
+            codigo_relacionado=codigo,
             creado_por_ia=True,
         ))
     await session.flush()

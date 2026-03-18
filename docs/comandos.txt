@@ -7,6 +7,8 @@
 #Comando para ejecutar el servidor de IA
 .\.venv\Scripts\uvicorn.exe src.api.main:app --reload --port 8001
 
+#reinicar credencialeas desde docker
+docker compose up --force-recreate
 
 #Comandos para levantar el proyecto
 python -m venv .venv

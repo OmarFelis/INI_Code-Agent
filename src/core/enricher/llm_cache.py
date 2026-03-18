@@ -81,7 +81,11 @@ class LLMCache:
                 self._delete(key)
                 return None
 
-            return json.loads(response_json)
+            parsed = json.loads(response_json)
+            if not isinstance(parsed, dict):
+                self._delete(key)
+                return None
+            return parsed
 
         except Exception as e:
             logger.warning("llm_cache_get_error", error=str(e))
