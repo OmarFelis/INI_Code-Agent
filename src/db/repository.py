@@ -294,6 +294,9 @@ async def create_reglas_negocio(
         if isinstance(regla, str):
             descripcion = regla
             codigo = None
+        elif isinstance(regla, list):
+            descripcion = " ".join(str(r) for r in regla)
+            codigo = None
         else:
             descripcion = regla.get("descripcion") or ""
             codigo = regla.get("codigo_relacionado")

@@ -97,6 +97,17 @@ def get_bedrock_client():
         logger.error("error_initializing_bedrock", error=str(e), profile=settings.aws_profile)
         raise
 
+def _sanitize_null_bytes(obj):
+    """Recursively remove null bytes (\u0000) from strings in a parsed JSON object."""
+    if isinstance(obj, str):
+        return obj.replace('\x00', '')
+    if isinstance(obj, dict):
+        return {k: _sanitize_null_bytes(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_null_bytes(i) for i in obj]
+    return obj
+
+
 def _safe_parse_json(text: str, context_name: str = "") -> dict:
     """
     Parse JSON with a 3-level fallback chain:
@@ -107,7 +118,7 @@ def _safe_parse_json(text: str, context_name: str = "") -> dict:
     """
     # Level 1: direct parse
     try:
-        return json.loads(text)
+        return _sanitize_null_bytes(json.loads(text))
     except json.JSONDecodeError:
         pass
 
@@ -122,7 +133,7 @@ def _safe_parse_json(text: str, context_name: str = "") -> dict:
     cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned)
 
     try:
-        return json.loads(cleaned)
+        return _sanitize_null_bytes(json.loads(cleaned))
     except json.JSONDecodeError:
         pass
 
@@ -132,7 +143,7 @@ def _safe_parse_json(text: str, context_name: str = "") -> dict:
             repaired = json_repair.loads(cleaned)
             if isinstance(repaired, dict):
                 logger.info("json_repaired_successfully", context=context_name)
-                return repaired
+                return _sanitize_null_bytes(repaired)
         except Exception:
             pass
 

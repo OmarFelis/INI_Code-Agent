@@ -739,7 +739,12 @@ async def _run_enrich_all_background_task(job_id: UUID):
                         lines = f.readlines()
                         inicio = (unit.linea_inicio or 1) - 1
                         fin = unit.linea_fin or len(lines)
-                        codigo_original = "".join(lines[inicio:fin])
+                        # Si el slice está vacío o invertido, leer el archivo completo
+                        codigo_original = "".join(lines[inicio:fin]) if fin > inicio else "".join(lines)
+
+                    if not codigo_original.strip():
+                        log.warning("enrich_all_empty_code", unit=unit.nombre, file=ruta_relativa)
+                        continue
 
                     context_block = ""
                     if project_context:
