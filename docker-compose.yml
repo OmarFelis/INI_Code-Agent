@@ -35,7 +35,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://codeagent:codeagent@db:5432/codeagent_db
       LOG_LEVEL: INFO
       API_SECRET_TOKEN: local-dev-token
-      AONE_SYNC_MODE: "${AONE_SYNC_MODE:-local}"
+      AONE_SYNC_MODE: "${AONE_SYNC_MODE:-remote}"
       ALLOWED_GIT_DOMAINS: bitbucket.org,github.com,gitlab.com
       GIT_USERNAME: "${GIT_USERNAME}"
       GIT_TOKEN: "${GIT_TOKEN}"

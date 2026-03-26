@@ -833,18 +833,21 @@ async def _run_enrich_all_background_task(job_id: UUID):
                             "analisis_ia": res["analisis_ia"],
                         })
 
-            sync_client = AOneSyncClient()
-            try:
-                if unidades_ia_patch:
-                    await sync_client._put_many("entities/unidades_logicas", unidades_ia_patch)
-                    log.info("enrich_all_unidades_ia_synced", count=len(unidades_ia_patch))
-                if reglas_orm:
-                    await sync_client._post_upsert_many("entities/reglas_negocio", reglas_orm)
-                    log.info("enrich_all_reglas_synced", count=len(reglas_orm))
-            except Exception as sync_e:
-                log.error("enrich_all_sync_failed", error=repr(sync_e))
-            finally:
-                await sync_client.close()
+            if settings.aone_sync_mode.lower() == "local":
+                log.info("aone_sync_skipped", reason="AONE_SYNC_MODE=local", task="enrich_all")
+            else:
+                sync_client = AOneSyncClient()
+                try:
+                    if unidades_ia_patch:
+                        await sync_client._put_many("entities/unidades_logicas", unidades_ia_patch)
+                        log.info("enrich_all_unidades_ia_synced", count=len(unidades_ia_patch))
+                    if reglas_orm:
+                        await sync_client._post_upsert_many("entities/reglas_negocio", reglas_orm)
+                        log.info("enrich_all_reglas_synced", count=len(reglas_orm))
+                except Exception as sync_e:
+                    log.error("enrich_all_sync_failed", error=repr(sync_e))
+                finally:
+                    await sync_client.close()
 
     except Exception as e:
         import traceback
@@ -991,14 +994,17 @@ async def _run_enrich_files_background_task(job_id: UUID):
                             "created_at": now_str,
                         })
             if archivos_actualizados:
-                sync_client = AOneSyncClient()
-                try:
-                    await sync_client._put_many("entities/archivos_fuente", archivos_actualizados)
-                    log.info("enrich_files_aone_synced", count=len(archivos_actualizados))
-                except Exception as sync_e:
-                    log.error("enrich_files_aone_sync_failed", error=repr(sync_e))
-                finally:
-                    await sync_client.close()
+                if settings.aone_sync_mode.lower() == "local":
+                    log.info("aone_sync_skipped", reason="AONE_SYNC_MODE=local", task="enrich_files")
+                else:
+                    sync_client = AOneSyncClient()
+                    try:
+                        await sync_client._put_many("entities/archivos_fuente", archivos_actualizados)
+                        log.info("enrich_files_aone_synced", count=len(archivos_actualizados))
+                    except Exception as sync_e:
+                        log.error("enrich_files_aone_sync_failed", error=repr(sync_e))
+                    finally:
+                        await sync_client.close()
 
     except Exception as e:
         log.error("enrich_files_failed", error=repr(e))

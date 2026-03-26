@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field
 class ScanRequest(BaseModel):
     """POST /api/v1/scan request body."""
 
-    project_path: str = Field(
-        ...,
+    project_path: str | None = Field(
+        default=None,
         description="Ruta local al repositorio del microservicio",
         examples=["C:/payment-service-charges"],
     )
@@ -56,4 +56,29 @@ class BatchScanRequest(BaseModel):
         description="Lista de scan requests a ejecutar en batch",
         min_length=1,
     )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "scans": [
+                    {
+                        "project_path": None,
+                        "branch": "main",
+                        "activo_id": "01961234-0000-7000-8000-000000000001",
+                        "aplicacion_id": "01961234-0000-7000-8000-000000000002",
+                        "microservice_name": "payment-service",
+                        "repo_url": "https://bitbucket.org/org/payment-service.git"
+                    },
+                    {
+                        "project_path": None,
+                        "branch": "main",
+                        "activo_id": "01961234-0000-7000-8000-000000000003",
+                        "aplicacion_id": "01961234-0000-7000-8000-000000000004",
+                        "microservice_name": "auth-service",
+                        "repo_url": "https://bitbucket.org/org/auth-service.git"
+                    }
+                ]
+            }
+        }
+    }
 

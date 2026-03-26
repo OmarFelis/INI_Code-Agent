@@ -42,7 +42,6 @@ async def create_scan_job(
     microservice_name: str | None = None,
     project_path: str | None = None,
     branch: str | None = None,
-    batch_id: str | None = None,
 ) -> EscaneoORM:
     """Create a new escaneo with status QUEUED."""
     job = EscaneoORM(
@@ -51,7 +50,6 @@ async def create_scan_job(
         microservice_name=microservice_name,
         project_path=project_path,
         branch=branch,
-        batch_id=batch_id,
         status="QUEUED",
     )
     session.add(job)
@@ -122,19 +120,6 @@ async def list_scan_jobs(
     if activo_id:
         query = query.where(EscaneoORM.activo_id == activo_id)
     result = await session.execute(query)
-    return list(result.scalars().all())
-
-
-async def list_batch_jobs(
-    session: AsyncSession,
-    batch_id: str,
-) -> list[EscaneoORM]:
-    """List all escaneos belonging to a batch."""
-    result = await session.execute(
-        select(EscaneoORM)
-        .where(EscaneoORM.batch_id == batch_id)
-        .order_by(EscaneoORM.created_at.asc())
-    )
     return list(result.scalars().all())
 
 
